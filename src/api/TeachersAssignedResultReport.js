@@ -7,17 +7,12 @@ const router = express.Router();
 
 /**
  * GET /api/teachers-assigned-result-report
- * Teacher only
+ * teacher only
  *
  * query:
  * - paperType
- * - subject
+ * - subject (subject name)
  */
-router.get(
-  "/",
-  authenticate,
-  authorize(["teacher"]),
-  getTeachersAssignedResultReport
-);
+router.get("/", authenticate, authorize(["teacher"]), getTeachersAssignedResultReport);
 
 export default router;

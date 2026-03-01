@@ -93,10 +93,9 @@ const countCorrectSelected = (correctIdxs, selectedIdxs) => {
  *       earned = point if user selected that correct
  *   else (multi correct):
  *       earned = point/2 if user selected at least 1 correct
- *       (selecting 2 correct still = point/2) ✅ matches your example
  *
  * PRACTISE:
- *   earned = 0 (does not count for rank/stats)
+ *   earned = 0
  */
 const computeEarnedPoints = (paymentTypeRaw, questionDoc, selectedIndexesRaw) => {
   const paymentType = String(paymentTypeRaw || "free").toLowerCase();
@@ -130,8 +129,6 @@ const computeEarnedPoints = (paymentTypeRaw, questionDoc, selectedIndexesRaw) =>
     if (totalCorrectCount === 1) {
       return { earnedPoints: Number(point.toFixed(2)), isCorrect };
     }
-
-    // multi-correct fixed half points
     const half = point / 2;
     return { earnedPoints: Number(half.toFixed(2)), isCorrect };
   }
@@ -562,7 +559,9 @@ export const attemptSummary = async (req, res) => {
 };
 
 /* =========================================================
-   GET /api/attempt/review/:attemptId
+   ✅ FIXED: GET /api/attempt/review/:attemptId
+   - Return ALL questions (answered + unanswered)
+   - Provide `selectedAnswer` for UI
 ========================================================= */
 export const attemptReview = async (req, res) => {
   try {
@@ -583,21 +582,23 @@ export const attemptReview = async (req, res) => {
     const used = await PaperAttempt.countDocuments({ paperId: attempt.paperId, studentId });
     const attemptsLeft = Math.max(attemptsAllowed - used, 0);
 
+    // ✅ Load ALL questions
     const questions = await Question.find({ paperId: attempt.paperId })
       .sort({ questionNumber: 1 })
       .lean();
-    const qMap = new Map(questions.map((q) => [String(q._id), q]));
 
+    // ✅ Load saved answers (may be less than questions)
     const answers = await AttemptAnswer.find({ attemptId }).lean();
+    const ansMap = new Map(answers.map((a) => [String(a.questionId), a]));
 
-    const rows = answers
-      .map((a) => {
-        const q = qMap.get(String(a.questionId));
-        if (!q) return null;
+    // ✅ Build rows for EVERY question (answered or not)
+    const rows = questions
+      .map((q) => {
+        const a = ansMap.get(String(q._id)) || null;
 
         const ansList = Array.isArray(q.answers) ? q.answers : [];
 
-        const selectedIndexes = Array.isArray(a.selectedAnswerIndexes)
+        const selectedIndexes = Array.isArray(a?.selectedAnswerIndexes)
           ? uniqSortedNums(a.selectedAnswerIndexes)
           : [];
 
@@ -605,10 +606,13 @@ export const attemptReview = async (req, res) => {
           .filter((i) => i >= 0 && i < ansList.length)
           .map((i) => ansList[i]);
 
+        // ✅ IMPORTANT: UI expects item.selectedAnswer (string)
+        const selectedAnswer = selectedAnswers.length ? selectedAnswers.join(", ") : "";
+
         const correctAnswers = computeCorrectAnswers(q);
 
         return {
-          _id: String(a._id),
+          _id: a?._id ? String(a._id) : `__UNANSWERED__${String(q._id)}`,
           questionId: String(q._id),
           questionNumber: q.questionNumber,
           question: toStr(q.question),
@@ -616,12 +620,15 @@ export const attemptReview = async (req, res) => {
 
           selectedAnswerIndexes: selectedIndexes,
           selectedAnswers,
+          selectedAnswer, // ✅ FIX for UI
 
           correctAnswers,
-          isCorrect: !!a.isCorrect,
+
+          // ✅ unanswered => false
+          isCorrect: !!a?.isCorrect,
 
           point: safeNum(q.point, 0),
-          earnedPoints: safeNum(a.earnedPoints, 0),
+          earnedPoints: safeNum(a?.earnedPoints, 0),
 
           explanationVideoUrl: toStr(q.explanationVideoUrl),
           explanationText: toStr(q.explanationText),
@@ -629,7 +636,6 @@ export const attemptReview = async (req, res) => {
           lessonName: toStr(q.lessonName),
         };
       })
-      .filter(Boolean)
       .sort((x, y) => x.questionNumber - y.questionNumber);
 
     const wrongFirst = rows.filter((r) => !r.isCorrect);
@@ -664,15 +670,6 @@ export const attemptReview = async (req, res) => {
 
 /* =========================================================
    GET /api/attempt/completed
-   ✅ BEST attempt per paper by totalPointsEarned
-   ✅ exclude practise papers
-========================================================= */
-
-
-/* =========================================================
-   GET /api/attempt/stats
-   ✅ totalCoins = SUM(bestAttempt.totalPointsEarned) (free+paid only)
-   ✅ totalFinishedExams = count of completed papers (free+paid only)
 ========================================================= */
 export const myStats = async (req, res) => {
   try {
@@ -683,7 +680,7 @@ export const myStats = async (req, res) => {
       studentId,
       status: "submitted",
       submittedAt: { $ne: null },
-      paymentType: { $in: ["free", "paid"] }, // ✅ exclude practise
+      paymentType: { $in: ["free", "paid"] },
     })
       .sort({ submittedAt: -1 })
       .select("paperId totalPointsEarned percentage submittedAt")
@@ -696,7 +693,6 @@ export const myStats = async (req, res) => {
       });
     }
 
-    // best per paper by points
     const bestMap = new Map();
     for (const a of attempts) {
       const pid = String(a.paperId);
@@ -758,7 +754,7 @@ export const myCompletedPapers = async (req, res) => {
       studentId,
       status: "submitted",
       submittedAt: { $ne: null },
-      paymentType: { $in: ["free", "paid"] }, // ✅ exclude practise
+      paymentType: { $in: ["free", "paid"] },
     })
       .sort({ submittedAt: -1 })
       .lean();
@@ -777,7 +773,6 @@ export const myCompletedPapers = async (req, res) => {
     const grades = await Grade.find({ _id: { $in: gradeIds } }).lean();
     const gradeMap = new Map(grades.map((g) => [String(g._id), g]));
 
-    // ✅ best per paper by totalPointsEarned
     const bestMap = new Map();
     for (const a of attempts) {
       const pid = String(a.paperId);
@@ -823,14 +818,8 @@ export const myCompletedPapers = async (req, res) => {
         const subject = p && g ? resolveSubjectName(p, g) : "Unknown Subject";
 
         const totalQuestions = safeNum(p?.questionCount, safeNum(a?.questionCount, 0));
-
-        // ✅ IMPORTANT: your UI expects "correct"
-        // Here correct = attempt.correctCount (FULL-correct questions count)
         const correct = safeNum(a?.correctCount, 0);
-
         const percentage = safeNum(a?.percentage, 0);
-
-        // ✅ coins = points (best attempt points)
         const coins = safeNum(a?.totalPointsEarned, 0);
 
         return {
@@ -840,7 +829,7 @@ export const myCompletedPapers = async (req, res) => {
           subject,
 
           totalQuestions,
-          correct, // ✅ ADD THIS (fix UI)
+          correct,
           percentage,
           coins,
 

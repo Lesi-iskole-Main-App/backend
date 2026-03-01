@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import User from "../infastructure/schemas/user.js";
 import Grade from "../infastructure/schemas/grade.js";
 import Paper from "../infastructure/schemas/paper.js";
@@ -62,6 +63,120 @@ const isBetterAttempt = (nextAttempt, currentBest) => {
   return nextSubmitted > currentSubmitted;
 };
 
+/**
+ * ✅ SAME Island Rank formula from src/application/rank.js
+ * returns Map(studentIdString -> rankNumber)
+ *
+ * - submitted only
+ * - paymentType only free/paid (exclude practise)
+ * - best attempt per (studentId+paperId)
+ * - sum totalCoins + totalFinishedExams + lastSubmittedAt
+ * - score and $denseRank
+ */
+const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
+  const ids = (studentIdStrings || [])
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+
+  if (!ids.length) return new Map();
+
+  const objectIds = ids
+    .map((id) => {
+      try {
+        return new mongoose.Types.ObjectId(id);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  if (!objectIds.length) return new Map();
+
+  const pipeline = [
+    {
+      $match: {
+        status: "submitted",
+        submittedAt: { $ne: null },
+        paymentType: { $in: ["free", "paid"] }, // ✅ exclude practise
+      },
+    },
+
+    {
+      $sort: {
+        studentId: 1,
+        paperId: 1,
+        totalPointsEarned: -1,
+        percentage: -1,
+        submittedAt: -1,
+      },
+    },
+    {
+      $group: {
+        _id: { studentId: "$studentId", paperId: "$paperId" },
+        bestAttempt: { $first: "$$ROOT" },
+      },
+    },
+    { $replaceRoot: { newRoot: "$bestAttempt" } },
+
+    {
+      $group: {
+        _id: "$studentId",
+        totalCoins: { $sum: { $ifNull: ["$totalPointsEarned", 0] } },
+        totalFinishedExams: { $sum: 1 },
+        lastSubmittedAt: { $max: "$submittedAt" },
+      },
+    },
+
+    {
+      $addFields: {
+        lastTime: { $toLong: { $ifNull: ["$lastSubmittedAt", new Date(0)] } },
+      },
+    },
+    {
+      $addFields: {
+        score: {
+          $add: [
+            { $multiply: ["$totalCoins", 1000000000000000] }, // 1e15
+            { $multiply: ["$totalFinishedExams", 1000000000000] }, // 1e12
+            "$lastTime",
+          ],
+        },
+      },
+    },
+
+    { $sort: { score: -1 } },
+
+    {
+      $setWindowFields: {
+        sortBy: { score: -1 },
+        output: {
+          rank: { $denseRank: {} },
+        },
+      },
+    },
+
+    // ✅ keep ranks global then filter to current students list
+    { $match: { _id: { $in: objectIds } } },
+
+    {
+      $project: {
+        studentId: { $toString: "$_id" },
+        rank: 1,
+      },
+    },
+  ];
+
+  const out = await PaperAttempt.aggregate(pipeline);
+
+  const map = new Map();
+  for (const row of out || []) {
+    const sid = String(row?.studentId || "").trim();
+    const r = Number(row?.rank || 0);
+    if (sid) map.set(sid, r || 0);
+  }
+  return map;
+};
+
 export const getAdminResultReport = async (req, res, next) => {
   try {
     const {
@@ -103,17 +218,15 @@ export const getAdminResultReport = async (req, res, next) => {
       };
     });
 
-    const filterPaperTypes = uniqueValues(
-      enrichedPapers.map((p) => p.paperType)
-    ).sort((a, b) => a.localeCompare(b));
+    const filterPaperTypes = uniqueValues(enrichedPapers.map((p) => p.paperType)).sort((a, b) =>
+      a.localeCompare(b)
+    );
 
-    const filterSubjects = uniqueValues(
-      enrichedPapers.map((p) => p.subject)
-    ).sort((a, b) => a.localeCompare(b));
+    const filterSubjects = uniqueValues(enrichedPapers.map((p) => p.subject)).sort((a, b) =>
+      a.localeCompare(b)
+    );
 
-    const filterGrades = uniqueValues(
-      enrichedPapers.map((p) => p.grade)
-    ).sort((a, b) => {
+    const filterGrades = uniqueValues(enrichedPapers.map((p) => p.grade)).sort((a, b) => {
       const na = Number(String(a).replace(/\D/g, ""));
       const nb = Number(String(b).replace(/\D/g, ""));
       return na - nb;
@@ -198,9 +311,7 @@ export const getAdminResultReport = async (req, res, next) => {
       }
     }
 
-    const studentIds = uniqueValues(
-      [...studentPaperBestMap.values()].map((x) => x.studentId)
-    );
+    const studentIds = uniqueValues([...studentPaperBestMap.values()].map((x) => x.studentId));
 
     const students = await User.find({
       _id: { $in: studentIds },
@@ -219,6 +330,15 @@ export const getAdminResultReport = async (req, res, next) => {
       ])
     );
 
+    // ✅ NEW: Island Rank for these students (GLOBAL formula)
+    let islandRankMap = new Map();
+    try {
+      islandRankMap = await buildIslandRankMapForStudents(studentIds);
+    } catch (err) {
+      console.error("AdminResultReport island rank error:", err?.message || err);
+      islandRankMap = new Map();
+    }
+
     const groupedByStudent = new Map();
 
     for (const item of studentPaperBestMap.values()) {
@@ -229,11 +349,14 @@ export const getAdminResultReport = async (req, res, next) => {
       if (!student || !paper || !best) continue;
 
       if (!groupedByStudent.has(item.studentId)) {
+        const rank = Number(islandRankMap.get(item.studentId) || 0);
+
         groupedByStudent.set(item.studentId, {
           id: item.studentId,
           studentId: item.studentId,
           studentName: student.name || "-",
           grade: student.grade || paper.grade || "-",
+          islandRank: rank ? rank : "-", // ✅ MAIN TABLE rank
           subjects: [],
           completedPapersCount: 0,
           results: [],
@@ -280,8 +403,15 @@ export const getAdminResultReport = async (req, res, next) => {
     }
 
     rows = rows.sort((a, b) => {
+      // keep your previous sort (highest score first)
       const byScore = Number(b.highestScore || 0) - Number(a.highestScore || 0);
       if (byScore !== 0) return byScore;
+
+      // if same score, show smaller island rank first (rank 1 top)
+      const ar = a.islandRank === "-" ? Number.MAX_SAFE_INTEGER : Number(a.islandRank || 0);
+      const br = b.islandRank === "-" ? Number.MAX_SAFE_INTEGER : Number(b.islandRank || 0);
+      if (ar !== br) return ar - br;
+
       return String(a.studentName).localeCompare(String(b.studentName));
     });
 
@@ -297,6 +427,14 @@ export const getAdminResultReport = async (req, res, next) => {
     });
   } catch (err) {
     console.error("getAdminResultReport error:", err);
+
+    if (String(err?.message || "").includes("$setWindowFields")) {
+      return res.status(500).json({
+        message:
+          "MongoDB does not support ranking ($setWindowFields). Upgrade MongoDB to 5.0+ (Atlas is OK).",
+      });
+    }
+
     next(err);
   }
 };
