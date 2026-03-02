@@ -91,15 +91,4 @@ connectDB();
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
-  console.log("✅ Mounted routes: /api/upload");
-  console.log("✅ Mounted routes: /api/language");
-  console.log("✅ Mounted routes: /api/attempt");
-  console.log("✅ Mounted routes: /api/payment");
-  console.log("✅ Mounted routes: /api/progress");
-  console.log("✅ Mounted routes: /api/teacher-enroll-subject");
-  console.log("✅ Mounted routes: /api/teachers-paper-report");
-  console.log("✅ Mounted routes: /api/teachers-assigned-class-report");
-  console.log("✅ Mounted routes: /api/teachers-assigned-result-report");
-  console.log("✅ Mounted routes: /api/student");
-  console.log("✅ Mounted routes: /api/admin-result-report");
 });
