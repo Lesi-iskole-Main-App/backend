@@ -1,94 +1,78 @@
 // src/application/payment.js
 import crypto from "crypto";
 import mongoose from "mongoose";
-import Payment from "../infastructure/schemas/payment.js";
 import Paper from "../infastructure/schemas/paper.js";
+import Payment from "../infastructure/schemas/payment.js";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(String(id || ""));
-const toStr = (v) => String(v ?? "").trim();
-const safeNum = (v, d = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-};
-const md5 = (s) => crypto.createHash("md5").update(String(s)).digest("hex");
 
-const formatAmount2 = (amount) => {
-  const n = safeNum(amount, 0);
-  return n.toFixed(2);
-};
+const md5 = (s) =>
+  crypto.createHash("md5").update(String(s || ""), "utf8").digest("hex");
 
-// ✅ PayHere hash rule:
-// md5(merchant_id + order_id + amount + currency + md5(merchant_secret).toUpperCase()).toUpperCase()
-const makePayhereHash = ({ merchantId, orderId, amount, currency, merchantSecret }) => {
-  const secretHash = md5(merchantSecret).toUpperCase();
-  const raw = `${merchantId}${orderId}${formatAmount2(amount)}${currency}${secretHash}`;
+const PAYHERE_MODE = String(process.env.PAYHERE_MODE || "sandbox")
+  .trim()
+  .toLowerCase(); // sandbox | live
+
+const PAYHERE_CURRENCY = String(process.env.PAYHERE_CURRENCY || "LKR")
+  .trim()
+  .toUpperCase();
+
+const PAYHERE_MERCHANT_ID = String(process.env.PAYHERE_MERCHANT_ID || "").trim();
+const PAYHERE_MERCHANT_SECRET = String(process.env.PAYHERE_MERCHANT_SECRET || "").trim();
+
+// ✅ if you set PAYHERE_GATEWAY_URL manually, it will override mode selection
+const PAYHERE_GATEWAY_URL = String(process.env.PAYHERE_GATEWAY_URL || "").trim()
+  ? String(process.env.PAYHERE_GATEWAY_URL).trim()
+  : PAYHERE_MODE === "live"
+  ? "https://www.payhere.lk/pay/checkout"
+  : "https://sandbox.payhere.lk/pay/checkout";
+
+// ✅ used for return/cancel/notify urls
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "http://localhost:8080").trim();
+
+// if true => skip md5sig verification (not recommended for production)
+const PAYHERE_DISABLE_HASH =
+  String(process.env.PAYHERE_DISABLE_HASH || "").toLowerCase() === "true";
+
+// hash = MD5( merchant_id + order_id + amount + currency + MD5(secret).toUpperCase() ).toUpperCase()
+function makePayhereHash({ merchant_id, order_id, amount, currency }) {
+  const secret = md5(PAYHERE_MERCHANT_SECRET).toUpperCase();
+  const amt = Number(amount || 0).toFixed(2);
+  const raw = `${merchant_id}${order_id}${amt}${currency}${secret}`;
   return md5(raw).toUpperCase();
-};
+}
 
-const getPublicBaseUrl = () => {
-  const base = toStr(process.env.PUBLIC_BASE_URL);
-  return base ? base.replace(/\/$/, "") : "";
-};
-
-const getCurrency = () => toStr(process.env.PAYHERE_CURRENCY || "LKR") || "LKR";
-const getMode = () =>
-  toStr(process.env.PAYHERE_MODE || "sandbox").toLowerCase() === "live" ? "live" : "sandbox";
-
-const getPayhereGatewayUrl = () => {
-  const mode = getMode();
-  return mode === "live"
-    ? "https://www.payhere.lk/pay/checkout"
-    : "https://sandbox.payhere.lk/pay/checkout";
-};
-
-/* =========================================================
-   ✅ GET /api/payment/my/:paperId
-========================================================= */
-export const getMyPaymentStatus = async (req, res) => {
+// md5sig = MD5(merchant_id + order_id + payhere_amount + payhere_currency + status_code + MD5(secret).toUpperCase()).toUpperCase()
+function verifyPayhereMd5Sig(payload) {
   try {
-    const userId = req.user?.id;
-    const { paperId } = req.params;
+    const merchant_id = String(payload?.merchant_id || "");
+    const order_id = String(payload?.order_id || "");
 
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
-    if (!isValidId(paperId)) return res.status(400).json({ message: "Invalid paperId" });
+    // PayHere sends decimals, make sure we compare as fixed(2)
+    const payhere_amount = Number(payload?.payhere_amount || payload?.amount || 0).toFixed(2);
 
-    const paper = await Paper.findById(paperId).lean();
-    if (!paper) return res.status(404).json({ message: "Paper not found" });
+    const payhere_currency = String(payload?.payhere_currency || payload?.currency || "");
+    const status_code = String(payload?.status_code || payload?.statusCode || "");
 
-    const payType = toStr(paper.payment).toLowerCase();
-    if (payType !== "paid") {
-      return res.status(200).json({
-        paperId: String(paperId),
-        payment: payType,
-        required: false,
-        unlocked: true,
-        paymentId: null,
-        orderId: null,
-      });
-    }
+    const secret = md5(PAYHERE_MERCHANT_SECRET).toUpperCase();
+    const raw = `${merchant_id}${order_id}${payhere_amount}${payhere_currency}${status_code}${secret}`;
+    const local = md5(raw).toUpperCase();
 
-    const paid = await Payment.findOne({ userId, paperId, status: "success" })
-      .sort({ createdAt: -1 })
-      .lean();
+    const remote = String(payload?.md5sig || payload?.md5Sig || "").toUpperCase();
+    if (!remote) return { ok: false, reason: "md5sig missing" };
 
-    return res.status(200).json({
-      paperId: String(paperId),
-      payment: "paid",
-      required: true,
-      unlocked: !!paid,
-      paymentId: paid?.payherePaymentId ? String(paid.payherePaymentId) : null,
-      orderId: paid?.orderId ? String(paid.orderId) : null,
-    });
-  } catch (err) {
-    console.error("getMyPaymentStatus error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    return { ok: local === remote, local, remote };
+  } catch (e) {
+    return { ok: false, reason: e?.message || "verify error" };
   }
-};
+}
 
-/* =========================================================
-   ✅ POST /api/payment/checkout
-========================================================= */
-export const createPayhereCheckout = async (req, res) => {
+/**
+ * POST /api/payment/checkout
+ * body: { paperId }
+ * returns: { unlocked:true } OR { gatewayUrl, fields }
+ */
+export const createCheckout = async (req, res) => {
   try {
     const userId = req.user?.id;
     const { paperId } = req.body;
@@ -97,198 +81,215 @@ export const createPayhereCheckout = async (req, res) => {
     if (!isValidId(paperId)) return res.status(400).json({ message: "Valid paperId is required" });
 
     const paper = await Paper.findById(paperId).lean();
-    if (!paper) return res.status(404).json({ message: "Paper not found" });
+    if (!paper || !paper.isActive || !paper.isPublished) {
+      return res.status(404).json({ message: "Paper not available" });
+    }
 
-    const payType = toStr(paper.payment).toLowerCase();
-    if (payType !== "paid") return res.status(400).json({ message: "This paper is not a paid paper" });
+    const payType = String(paper.payment || "free").toLowerCase();
+    if (payType !== "paid") {
+      return res.status(400).json({ message: "This paper is not a paid paper" });
+    }
 
-    const amount = safeNum(paper.amount, 0);
-    if (!amount || amount <= 0) return res.status(400).json({ message: "Invalid paper amount" });
+    if (!PAYHERE_MERCHANT_ID || !PAYHERE_MERCHANT_SECRET) {
+      return res.status(500).json({ message: "PayHere keys not configured" });
+    }
 
-    const already = await Payment.findOne({ userId, paperId, status: "success" }).lean();
-    if (already) {
+    // ✅ if already paid, return unlocked (DO NOT return empty gatewayUrl)
+    const alreadyPaid = await Payment.findOne({
+      userId,
+      paperId,
+      status: { $in: ["completed", "success"] },
+    }).lean();
+
+    if (alreadyPaid) {
       return res.status(200).json({
-        message: "Already paid",
         unlocked: true,
-        orderId: already.orderId,
-        paymentId: already.payherePaymentId || null,
+        message: "Already paid",
       });
     }
 
-    const merchantId = toStr(process.env.PAYHERE_MERCHANT_ID);
-
-    /**
-     * ✅ IMPORTANT:
-     * Use the App-specific Merchant Secret from your "Integrations -> App" row.
-     * (The portal generates a secret per App package) :contentReference[oaicite:3]{index=3}
-     */
-    const merchantSecretRaw = process.env.PAYHERE_MERCHANT_SECRET ?? "";
-    const merchantSecret = toStr(merchantSecretRaw);
-
-    if (!merchantId || !merchantSecret) {
-      return res.status(500).json({ message: "PayHere config missing (merchant id/secret)" });
+    const amount = Number(paper.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ message: "Paper amount invalid" });
     }
 
-    const base = getPublicBaseUrl();
-    if (!base) {
-      return res.status(500).json({
-        message: "PUBLIC_BASE_URL missing. Set it to your PUBLIC backend URL (not localhost).",
-      });
-    }
-
-    const currency = getCurrency();
-    const orderId = `LESI-${String(paperId)}-${String(userId)}-${Date.now()}`;
-
-    const hash = makePayhereHash({
-      merchantId,
-      orderId,
-      amount,
-      currency,
-      merchantSecret,
-    });
-
-    const notifyUrl = `${base}/api/payment/notify`;
-    const returnUrl = `${base}/api/payment/return`;
-    const cancelUrl = `${base}/api/payment/cancel`;
+    const orderId = `LESI-${paperId}-${userId}-${Date.now()}`;
 
     await Payment.create({
       userId,
       paperId,
       orderId,
+      currency: PAYHERE_CURRENCY,
       amount,
-      currency,
       status: "pending",
-      raw: { paperTitle: paper.paperTitle },
+      statusCode: 0,
+      payherePaymentId: "",
+      method: "",
+      md5sig: "",
+      raw: { paperTitle: paper.paperTitle || "", mode: PAYHERE_MODE },
     });
 
     const fields = {
-      merchant_id: merchantId,
-      return_url: returnUrl,
-      cancel_url: cancelUrl,
-      notify_url: notifyUrl,
+      merchant_id: PAYHERE_MERCHANT_ID,
+
+      return_url: `${PUBLIC_BASE_URL}/api/payment/return?order_id=${encodeURIComponent(orderId)}`,
+      cancel_url: `${PUBLIC_BASE_URL}/api/payment/cancel?order_id=${encodeURIComponent(orderId)}`,
+      notify_url: `${PUBLIC_BASE_URL}/api/payment/notify`,
 
       order_id: orderId,
-      items: toStr(paper.paperTitle || "Paid Paper"),
-      currency,
-      amount: formatAmount2(amount),
+      items: String(paper.paperTitle || "Paper"),
+      currency: PAYHERE_CURRENCY,
+      amount: Number(amount).toFixed(2),
 
-      first_name: "Student",
-      last_name: "User",
-      email: "student@example.com",
-      phone: "0770000000",
-      address: "Sri Lanka",
-      city: "Colombo",
+      first_name: String(req.user?.name || "Student"),
+      last_name: "",
+      email: String(req.user?.email || "student@example.com"),
+      phone: String(req.user?.phone || ""),
+      address: "",
+      city: "",
       country: "Sri Lanka",
-
-      // ✅ NEVER DISABLE hash in real requests
-      hash,
     };
 
-    console.log("PAYHERE ENV CHECK", {
-      mode: getMode(),
-      gatewayUrl: getPayhereGatewayUrl(),
-      publicBaseUrl: base,
-      currency,
-      merchantIdPreview: merchantId ? merchantId.slice(0, 4) + "..." : "MISSING",
-      merchantSecretLen: merchantSecret ? merchantSecret.length : 0,
-    });
-
-    console.log("PAYHERE FIELDS CHECK", {
+    const hash = makePayhereHash({
       merchant_id: fields.merchant_id,
       order_id: fields.order_id,
       amount: fields.amount,
       currency: fields.currency,
-      hash: fields.hash ? String(fields.hash).slice(0, 6) + "..." : "MISSING",
-      notify_url: fields.notify_url,
-      return_url: fields.return_url,
-      cancel_url: fields.cancel_url,
     });
 
     return res.status(200).json({
-      message: "Checkout created",
-      gatewayUrl: getPayhereGatewayUrl(),
-      orderId,
-      paperId: String(paperId),
-      amount,
-      currency,
-      fields,
-      returnUrl,
-      cancelUrl,
+      gatewayUrl: PAYHERE_GATEWAY_URL, // ✅ sandbox/live correct now
+      fields: { ...fields, hash },
+      mode: PAYHERE_MODE,
     });
   } catch (err) {
-    console.error("createPayhereCheckout error:", err);
+    console.error("createCheckout error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-/* =========================================================
-   ✅ POST /api/payment/notify (PayHere -> your server)
-========================================================= */
+/**
+ * POST /api/payment/notify
+ * PayHere server POSTs x-www-form-urlencoded
+ */
 export const payhereNotify = async (req, res) => {
   try {
-    const body = req.body || {};
+    const payload = req.body || {};
 
-    const merchantId = toStr(body.merchant_id);
-    const orderId = toStr(body.order_id);
-    const paymentId = toStr(body.payment_id);
-    const payhereAmount = toStr(body.payhere_amount);
-    const payhereCurrency = toStr(body.payhere_currency);
-    const statusCode = safeNum(body.status_code, 0);
-    const md5sig = toStr(body.md5sig);
-    const method = toStr(body.method);
+    const orderId = String(payload?.order_id || "");
+    if (!orderId) return res.status(400).send("order_id missing");
 
-    res.status(200).send("OK");
+    const statusCode = Number(payload?.status_code || payload?.statusCode || 0);
+    const payherePaymentId = String(payload?.payment_id || payload?.payherePaymentId || "");
+    const method = String(payload?.method || "");
 
-    if (!merchantId || !orderId) return;
-
-    const merchantSecret = toStr(process.env.PAYHERE_MERCHANT_SECRET);
-    if (!merchantSecret) return;
-
-    const secretHash = md5(merchantSecret).toUpperCase();
-    const raw = `${merchantId}${orderId}${payhereAmount}${payhereCurrency}${statusCode}${secretHash}`;
-    const localSig = md5(raw).toUpperCase();
-
-    const isValidSig = localSig === md5sig;
-
-    const payment = await Payment.findOne({ orderId }).sort({ createdAt: -1 });
-    if (!payment) return;
-
-    const next = {
-      payherePaymentId: paymentId || payment.payherePaymentId,
-      method: method || payment.method,
-      statusCode,
-      md5sig: md5sig || payment.md5sig,
-      raw: body,
-    };
-
-    if (!isValidSig) {
-      await Payment.findByIdAndUpdate(payment._id, { $set: { ...next, status: "failed" } });
-      return;
+    // ✅ verify md5sig unless disabled
+    if (!PAYHERE_DISABLE_HASH) {
+      const sig = verifyPayhereMd5Sig(payload);
+      if (!sig.ok) {
+        console.warn("PayHere md5sig invalid:", sig);
+        await Payment.findOneAndUpdate(
+          { orderId },
+          {
+            $set: {
+              raw: payload,
+              md5sig: String(payload?.md5sig || ""),
+              status: "pending",
+              statusCode: 0,
+            },
+          },
+          { new: true }
+        );
+        return res.status(200).send("OK");
+      }
     }
 
-    if (statusCode === 2) {
-      await Payment.findByIdAndUpdate(payment._id, { $set: { ...next, status: "success" } });
-    } else if (statusCode === -1 || statusCode === -2) {
-      await Payment.findByIdAndUpdate(payment._id, { $set: { ...next, status: "cancelled" } });
-    } else {
-      await Payment.findByIdAndUpdate(payment._id, { $set: { ...next, status: "failed" } });
-    }
+    // PayHere success is typically status_code = 2
+    const success = statusCode === 2;
+    const nextStatus = success ? "completed" : "failed";
+
+    await Payment.findOneAndUpdate(
+      { orderId },
+      {
+        $set: {
+          payherePaymentId,
+          method,
+          status: nextStatus,
+          statusCode,
+          md5sig: String(payload?.md5sig || ""),
+          raw: payload,
+        },
+      },
+      { new: true }
+    );
+
+    return res.status(200).send("OK");
   } catch (err) {
     console.error("payhereNotify error:", err);
-    try {
-      res.status(200).send("OK");
-    } catch {}
+    return res.status(200).send("OK");
   }
 };
 
-export const payhereReturn = async (_req, res) => {
+export const payhereReturn = async (req, res) => {
+  const orderId = String(req.query?.order_id || "");
   return res
     .status(200)
-    .send(`<html><body style="font-family:Arial;padding:20px"><h3>Payment Completed</h3><p>You can close this window and return to the app.</p></body></html>`);
+    .send(
+      `<html><body><h3>Payment Completed</h3><p>You can close this page.</p><p>${orderId}</p></body></html>`
+    );
 };
 
-export const payhereCancel = async (_req, res) => {
+export const payhereCancel = async (req, res) => {
+  const orderId = String(req.query?.order_id || "");
   return res
     .status(200)
-    .send(`<html><body style="font-family:Arial;padding:20px"><h3>Payment Cancelled</h3><p>You can close this window and return to the app.</p></body></html>`);
+    .send(
+      `<html><body><h3>Payment Cancelled</h3><p>You can close this page.</p><p>${orderId}</p></body></html>`
+    );
+};
+
+/**
+ * GET /api/payment/my/:paperId
+ * returns: { required, unlocked, status, statusCode }
+ */
+export const myPaymentStatus = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const { paperId } = req.params;
+
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    if (!isValidId(paperId)) return res.status(400).json({ message: "Invalid paperId" });
+
+    const paper = await Paper.findById(paperId).select("_id payment amount").lean();
+    if (!paper) return res.status(404).json({ message: "Paper not found" });
+
+    const payType = String(paper.payment || "free").toLowerCase();
+    if (payType !== "paid") {
+      return res
+        .status(200)
+        .json({ required: false, unlocked: true, status: "not_required", statusCode: 0 });
+    }
+
+    const p = await Payment.findOne({ userId, paperId })
+      .sort({ createdAt: -1 })
+      .select("status statusCode orderId payherePaymentId amount currency")
+      .lean();
+
+    const status = String(p?.status || "pending");
+    const unlocked = ["completed", "success"].includes(status);
+
+    return res.status(200).json({
+      required: true,
+      unlocked,
+      status,
+      statusCode: Number(p?.statusCode || 0),
+      orderId: p?.orderId || "",
+      payherePaymentId: p?.payherePaymentId || "",
+      amount: Number(p?.amount || paper.amount || 0),
+      currency: p?.currency || PAYHERE_CURRENCY,
+    });
+  } catch (err) {
+    console.error("myPaymentStatus error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
 };

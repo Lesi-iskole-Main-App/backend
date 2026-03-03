@@ -1,29 +1,26 @@
 // src/api/payment.js
 import express from "express";
-import { authenticate } from "./middlewares/authentication.js";
-import { authorize } from "./middlewares/authrization.js";
-
 import {
-  createPayhereCheckout,
+  createCheckout,
   payhereNotify,
-  getMyPaymentStatus,
   payhereReturn,
   payhereCancel,
+  myPaymentStatus,
 } from "../application/payment.js";
+
+import { authenticate } from "./middlewares/authentication.js";
 
 const router = express.Router();
 
-// ✅ student creates checkout
-router.post("/checkout", authenticate, authorize(["student"]), createPayhereCheckout);
+// ✅ create checkout (student)
+router.post("/checkout", authenticate, createCheckout);
 
-// ✅ student checks unlock
-router.get("/my/:paperId", authenticate, authorize(["student"]), getMyPaymentStatus);
-
-// ✅ PayHere notify (NO auth) - urlencoded
-router.post("/notify", express.urlencoded({ extended: true }), payhereNotify);
-
-// ✅ PayHere return/cancel (NO auth)
+// ✅ payhere callbacks (PayHere server calls notify_url)
+router.post("/notify", payhereNotify);
 router.get("/return", payhereReturn);
 router.get("/cancel", payhereCancel);
+
+// ✅ check unlock status (student)
+router.get("/my/:paperId", authenticate, myPaymentStatus);
 
 export default router;

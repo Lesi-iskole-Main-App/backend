@@ -158,10 +158,11 @@ export const startAttempt = async (req, res) => {
 
     // ✅ paid lock (PayHere)
     if (payType === "paid") {
+      // ✅ FIX: accept both "completed" and old "success"
       const paid = await Payment.findOne({
         userId: studentId,
         paperId,
-        status: "success",
+        status: { $in: ["completed", "success"] },
       }).lean();
 
       if (!paid) {
@@ -620,7 +621,7 @@ export const attemptReview = async (req, res) => {
 
           selectedAnswerIndexes: selectedIndexes,
           selectedAnswers,
-          selectedAnswer, // ✅ FIX for UI
+          selectedAnswer,
 
           correctAnswers,
 
@@ -722,7 +723,7 @@ export const myStats = async (req, res) => {
 
         if (aPct === cPct) {
           const aTime = a?.submittedAt ? new Date(a.submittedAt).getTime() : 0;
-          const cTime = curr?.submittedAt ? new Date(curr?.submittedAt).getTime() : 0;
+          const cTime = curr?.submittedAt ? new Date(curr.submittedAt).getTime() : 0;
           if (aTime > cTime) bestMap.set(pid, a);
         }
       }

@@ -15,7 +15,8 @@ const paymentSchema = new Schema(
 
     status: {
       type: String,
-      enum: ["pending", "success", "failed", "cancelled"],
+      // ✅ allow completed also (your DB uses this)
+      enum: ["pending", "success", "completed", "failed", "cancelled"],
       default: "pending",
       index: true,
     },
