@@ -91,7 +91,7 @@ app.use("/api/user", userRouter);
 app.use("/api/grade", gradeRouter);
 app.use("/api/class", classRouter);
 app.use("/api/teacher", teacherAssignmentRouter);
-app.use("/api/live", liveRouter);
+app.use("/api/live", liveRouter);sz
 app.use("/api/lesson", lessonRouter);
 app.use("/api/enroll", enrollRouter);
 app.use("/api/rank", rankRouter);
