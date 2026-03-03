@@ -35,9 +35,9 @@ const app = express();
 
 // ✅ allow multiple frontends (student + admin + teacher + local dev)
 const allowedOrigins = [
-  process.env.FRONTEND_URL,       // student web
-  process.env.ADMIN_URL,          // admin panel
-  process.env.TEACHER_URL,        // teacher panel
+  process.env.FRONTEND_URL, // student web
+  process.env.ADMIN_URL, // admin panel
+  process.env.TEACHER_URL, // teacher panel
 
   // optional local dev urls
   process.env.LOCAL_WEB_URL,
@@ -54,32 +54,33 @@ const allowedOrigins = [
 // ✅ important for cookies on cross-site requests
 app.set("trust proxy", 1);
 
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      // allow server-to-server / curl / mobile apps without Origin header
-      if (!origin) return cb(null, true);
+// ✅ build ONE cors middleware so we can reuse for preflight too
+const corsMiddleware = cors({
+  origin: (origin, cb) => {
+    // allow server-to-server / curl / mobile apps without Origin header
+    if (!origin) return cb(null, true);
 
-      // normalize origin (remove trailing slash)
-      const cleanOrigin = String(origin).replace(/\/$/, "");
+    // normalize origin (remove trailing slash)
+    const cleanOrigin = String(origin).replace(/\/$/, "");
 
-      const ok = allowedOrigins
-        .map((o) => String(o).replace(/\/$/, ""))
-        .includes(cleanOrigin);
+    const ok = allowedOrigins
+      .map((o) => String(o).replace(/\/$/, ""))
+      .includes(cleanOrigin);
 
-      if (ok) return cb(null, true);
+    if (ok) return cb(null, true);
 
-      console.log("❌ CORS blocked origin:", origin);
-      return cb(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+    console.log("❌ CORS blocked origin:", origin);
+    return cb(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+});
 
-// ✅ preflight
-app.options("*", cors());
+app.use(corsMiddleware);
+
+// ✅ preflight (Express 5 compatible)
+app.options(/.*/, corsMiddleware);
 
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -91,7 +92,7 @@ app.use("/api/user", userRouter);
 app.use("/api/grade", gradeRouter);
 app.use("/api/class", classRouter);
 app.use("/api/teacher", teacherAssignmentRouter);
-app.use("/api/live", liveRouter);sz
+app.use("/api/live", liveRouter); // ✅ removed "sz"
 app.use("/api/lesson", lessonRouter);
 app.use("/api/enroll", enrollRouter);
 app.use("/api/rank", rankRouter);
@@ -104,10 +105,7 @@ app.use("/api/language", languageRouter);
 app.use("/api/progress", progressRouter);
 app.use("/api/teacher-enroll-subject", enrollTecherssubjectRouter);
 app.use("/api/teachers-paper-report", techerspaperreportRouter);
-app.use(
-  "/api/teachers-assigned-class-report",
-  teachersAssignedClassReportRouter
-);
+app.use("/api/teachers-assigned-class-report", teachersAssignedClassReportRouter);
 app.use(
   "/api/teachers-assigned-result-report",
   teachersAssignedResultReportRouter
