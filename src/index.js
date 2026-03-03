@@ -111,7 +111,8 @@ app.use(
   teachersAssignedResultReportRouter
 );
 app.use("/api/student", studentRouter);
-
+app.get("/", (req, res) => res.send("OK"));
+app.get("/api/health", (req, res) => res.json({ ok: true }));
 // ✅ NEW
 app.use("/api/admin-result-report", adminResultReportRouter);
 
