@@ -28,7 +28,17 @@ const PAYHERE_GATEWAY_URL = String(process.env.PAYHERE_GATEWAY_URL || "").trim()
   : "https://sandbox.payhere.lk/pay/checkout";
 
 // ✅ used for return/cancel/notify urls
-const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "http://localhost:8080").trim();
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "").trim();
+if (!PUBLIC_BASE_URL) console.error("[PayHere] PUBLIC_BASE_URL is not set — notify/return/cancel URLs will be broken!");
+
+// Startup validation
+if (!PAYHERE_MERCHANT_ID || !PAYHERE_MERCHANT_SECRET) {
+  console.error("[PayHere] MISSING ENV VARS — payments will fail!");
+  console.error("[PayHere] PAYHERE_MERCHANT_ID set:", !!PAYHERE_MERCHANT_ID);
+  console.error("[PayHere] PAYHERE_MERCHANT_SECRET set:", !!PAYHERE_MERCHANT_SECRET);
+} else {
+  console.log(`[PayHere] Initialized — mode: ${PAYHERE_MODE}, merchant_id: ${PAYHERE_MERCHANT_ID}, gateway: ${PAYHERE_GATEWAY_URL}`);
+}
 
 // if true => skip md5sig verification (not recommended for production)
 const PAYHERE_DISABLE_HASH =
@@ -39,7 +49,20 @@ function makePayhereHash({ merchant_id, order_id, amount, currency }) {
   const secret = md5(PAYHERE_MERCHANT_SECRET).toUpperCase();
   const amt = Number(amount || 0).toFixed(2);
   const raw = `${merchant_id}${order_id}${amt}${currency}${secret}`;
-  return md5(raw).toUpperCase();
+  const hash = md5(raw).toUpperCase();
+
+  console.log("[PayHere Hash Debug]", {
+    merchant_id,
+    order_id,
+    amount: amt,
+    currency,
+    mode: PAYHERE_MODE,
+    secret_set: !!PAYHERE_MERCHANT_SECRET,
+    secret_length: PAYHERE_MERCHANT_SECRET.length,
+    hash,
+  });
+
+  return hash;
 }
 
 // md5sig = MD5(merchant_id + order_id + payhere_amount + payhere_currency + status_code + MD5(secret).toUpperCase()).toUpperCase()
