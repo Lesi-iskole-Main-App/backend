@@ -11,8 +11,10 @@ const validateTeachers = async (teacherIds) => {
   if (!Array.isArray(teacherIds)) {
     return { ok: false, code: 400, message: "teacherIds must be an array" };
   }
+
+  // ✅ allow empty teacher list
   if (teacherIds.length === 0) {
-    return { ok: false, code: 400, message: "Please select at least one teacher" };
+    return { ok: true };
   }
 
   for (const tid of teacherIds) {

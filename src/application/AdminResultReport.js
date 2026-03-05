@@ -274,7 +274,7 @@ export const getAdminResultReport = async (req, res, next) => {
       status: "submitted",
     })
       .select(
-        "paperId studentId attemptNo questionCount totalPossiblePoints totalPointsEarned correctCount percentage submittedAt updatedAt"
+        "paperId studentId attemptNo questionCount totalPossiblePoints totalPointsEarned correctCount percentage submittedAt updatedAt paymentType"
       )
       .lean();
 
@@ -359,6 +359,9 @@ export const getAdminResultReport = async (req, res, next) => {
           islandRank: rank ? rank : "-", // ✅ MAIN TABLE rank
           subjects: [],
           completedPapersCount: 0,
+          freePaperCount: 0,
+          practisePaperCount: 0,
+          paidPaperCount: 0,
           results: [],
           highestScore: 0,
         });
@@ -368,11 +371,18 @@ export const getAdminResultReport = async (req, res, next) => {
 
       group.subjects.push(paper.subject || "-");
       group.completedPapersCount += 1;
+
+      const payType = String(best.paymentType || "").toLowerCase().trim();
+      if (payType === "free") group.freePaperCount += 1;
+      else if (payType === "practise" || payType === "practice") group.practisePaperCount += 1;
+      else if (payType === "paid") group.paidPaperCount += 1;
+
       group.results.push({
         paperName: paper.paperName || "-",
         subject: paper.subject || "-",
         grade: paper.grade || "-",
         paperType: paper.paperType || "-",
+        paymentType: payType || "-",
         correctAnswers: `${Number(best.correctCount || 0)}/${Number(best.questionCount || 0)}`,
         marks: `${Number(best.totalPointsEarned || 0)}/${Number(best.totalPossiblePoints || 0)}`,
         progress: formatPercentage(best.percentage),
