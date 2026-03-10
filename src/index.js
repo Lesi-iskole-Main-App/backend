@@ -27,7 +27,7 @@ import techerspaperreportRouter from "./api/Techerspaperreport.js";
 import teachersAssignedClassReportRouter from "./api/TeachersAssignedClassReport.js";
 import teachersAssignedResultReportRouter from "./api/TeachersAssignedResultReport.js";
 import studentRouter from "./api/student.js";
-
+import recordingRouter from "./api/recording.js";
 // ✅ NEW
 import adminResultReportRouter from "./api/AdminResultReport.js";
 
@@ -95,6 +95,7 @@ app.use("/api/teacher", teacherAssignmentRouter);
 app.use("/api/live", liveRouter); // ✅ removed "sz"
 app.use("/api/lesson", lessonRouter);
 app.use("/api/enroll", enrollRouter);
+app.use("/api/recording", recordingRouter);
 app.use("/api/rank", rankRouter);
 app.use("/api/paper", paperRouter);
 app.use("/api/question", questionRouter);

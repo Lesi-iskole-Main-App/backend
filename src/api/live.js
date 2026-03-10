@@ -1,29 +1,58 @@
-// backend/api/live.js
 import express from "express";
 import { authenticate } from "./middlewares/authentication.js";
 import { authorize } from "./middlewares/authrization.js";
 
 import {
-  createLive,
-  getAllLive,
-  getLiveById,
-  updateLiveById,
-  deleteLiveById,
+  createLiveByClassId,
+  getAllLiveByClassId,
+  getLiveByClassIdAndLiveId,
+  updateLiveByClassId,
+  deleteLiveByClassId,
+  getAllLives,
+  getStudentLives,
 } from "../application/live.js";
-
-// ✅ NEW
-import { getStudentLives } from "../application/liveStudent.js";
 
 const router = express.Router();
 
-// ✅ STUDENT: enrolled lives only
-router.get("/student", authenticate, authorize(["student"]), getStudentLives);
+// student live list
+router.get(
+  "/student",
+  authenticate,
+  authorize(["student"]),
+  getStudentLives
+);
 
-// ✅ admin only
-router.post("/", authenticate, authorize(["admin"]), createLive);
-router.get("/", authenticate, authorize(["admin"]), getAllLive);
-router.get("/:id", authenticate, authorize(["admin"]), getLiveById);
-router.patch("/:id", authenticate, authorize(["admin"]), updateLiveById);
-router.delete("/:id", authenticate, authorize(["admin"]), deleteLiveById);
+// all lives
+router.get("/", authenticate, getAllLives);
+
+// get all by classId
+router.get("/class/:classId", authenticate, getAllLiveByClassId);
+
+// get one by classId + liveId
+router.get("/class/:classId/:liveId", authenticate, getLiveByClassIdAndLiveId);
+
+// create
+router.post(
+  "/class/:classId",
+  authenticate,
+  authorize(["admin", "teacher"]),
+  createLiveByClassId
+);
+
+// update
+router.patch(
+  "/class/:classId/:liveId",
+  authenticate,
+  authorize(["admin", "teacher"]),
+  updateLiveByClassId
+);
+
+// delete
+router.delete(
+  "/class/:classId/:liveId",
+  authenticate,
+  authorize(["admin", "teacher"]),
+  deleteLiveByClassId
+);
 
 export default router;

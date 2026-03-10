@@ -5,6 +5,7 @@ import { authorize } from "../api/middlewares/authrization.js";
 import {
   requestEnroll,
   getMyEnrollRequests,
+  getMyApprovedClasses,
   getPendingEnrollRequests,
   approveEnrollRequest,
   rejectEnrollRequest,
@@ -12,13 +13,34 @@ import {
 
 const router = express.Router();
 
-// ✅ student
+// student
 router.post("/request", authenticate, authorize(["student"]), requestEnroll);
 router.get("/my", authenticate, authorize(["student"]), getMyEnrollRequests);
+router.get(
+  "/my-approved-classes",
+  authenticate,
+  authorize(["student"]),
+  getMyApprovedClasses
+);
 
-// ✅ admin
-router.get("/pending", authenticate, authorize(["admin"]), getPendingEnrollRequests);
-router.patch("/approve/:enrollId", authenticate, authorize(["admin"]), approveEnrollRequest);
-router.patch("/reject/:enrollId", authenticate, authorize(["admin"]), rejectEnrollRequest);
+// admin
+router.get(
+  "/pending",
+  authenticate,
+  authorize(["admin"]),
+  getPendingEnrollRequests
+);
+router.patch(
+  "/approve/:enrollId",
+  authenticate,
+  authorize(["admin"]),
+  approveEnrollRequest
+);
+router.patch(
+  "/reject/:enrollId",
+  authenticate,
+  authorize(["admin"]),
+  rejectEnrollRequest
+);
 
 export default router;

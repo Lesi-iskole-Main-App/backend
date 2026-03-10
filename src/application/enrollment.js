@@ -6,66 +6,92 @@ import Grade from "../infastructure/schemas/grade.js";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
+const getSubjectNameFromGrade = (gradeDoc, cls) => {
+  if (!gradeDoc || !cls) return "Unknown";
+
+  const gradeNo = Number(gradeDoc?.grade);
+
+  if (gradeNo >= 1 && gradeNo <= 11) {
+    return (
+      (gradeDoc.subjects || []).find(
+        (s) => String(s._id) === String(cls.subjectId)
+      )?.subject || "Unknown"
+    );
+  }
+
+  if (gradeNo >= 12 && gradeNo <= 13) {
+    const streamObj = (gradeDoc.streams || []).find(
+      (s) => String(s._id) === String(cls.streamId)
+    );
+
+    return (
+      (streamObj?.subjects || []).find(
+        (s) => String(s._id) === String(cls.streamSubjectId)
+      )?.subject || "Unknown"
+    );
+  }
+
+  return "Unknown";
+};
+
 const classReadableDetails = async (classId) => {
   const cls = await ClassModel.findById(classId)
-    .populate("gradeId", "grade subjects")
     .populate("teacherIds", "name email phonenumber isApproved role")
     .lean();
 
   if (!cls) return null;
 
-  const gradeNo = cls.gradeId?.grade;
+  const gradeDoc = await Grade.findById(cls.gradeId).lean();
+  if (!gradeDoc) return null;
 
-  const subjectName =
-    (cls.gradeId?.subjects || []).find((s) => String(s._id) === String(cls.subjectId))
-      ?.subject || "Unknown";
-
-  const teachers = (cls.teacherIds || [])
-    .map((t) => t?.name)
-    .filter(Boolean);
+  const teachers = (cls.teacherIds || []).map((t) => t?.name).filter(Boolean);
 
   return {
     classId: cls._id,
     className: cls.className,
-    grade: gradeNo,
-    subject: subjectName,
+    grade: gradeDoc?.grade ?? null,
+    subject: getSubjectNameFromGrade(gradeDoc, cls),
     teachers,
+    imageUrl: cls.imageUrl || "",
   };
 };
 
 // =======================================================
 // STUDENT: REQUEST ENROLL
 // POST /api/enroll/request
-// Body: { classId, studentName, studentPhone }
 // =======================================================
 export const requestEnroll = async (req, res) => {
   try {
     const { classId, studentName, studentPhone } = req.body || {};
 
-    if (!classId) return res.status(400).json({ message: "classId is required" });
-    if (!isValidId(classId)) return res.status(400).json({ message: "Invalid classId" });
+    if (!classId) {
+      return res.status(400).json({ message: "classId is required" });
+    }
+
+    if (!isValidId(classId)) {
+      return res.status(400).json({ message: "Invalid classId" });
+    }
 
     const student = await User.findById(req.user?.id).lean();
     if (!student || student.role !== "student") {
-      return res.status(403).json({ message: "Only students can request enrollment" });
+      return res
+        .status(403)
+        .json({ message: "Only students can request enrollment" });
     }
 
     const cls = await ClassModel.findById(classId).lean();
     if (!cls) return res.status(404).json({ message: "Class not found" });
 
-    const grade = await Grade.findById(cls.gradeId).lean();
-    if (!grade) return res.status(404).json({ message: "Grade not found for this class" });
-
-    if (!(Number(grade.grade) >= 1 && Number(grade.grade) <= 11)) {
-      return res.status(400).json({ message: "Enrollment allowed only for classes in grades 1-11" });
-    }
-
-    // ✅ take from modal first, fallback to user profile
     const snapName = String(studentName || student.name || "").trim();
     const snapPhone = String(studentPhone || student.phonenumber || "").trim();
 
-    if (!snapName) return res.status(400).json({ message: "studentName is required" });
-    if (!snapPhone) return res.status(400).json({ message: "studentPhone is required" });
+    if (!snapName) {
+      return res.status(400).json({ message: "studentName is required" });
+    }
+
+    if (!snapPhone) {
+      return res.status(400).json({ message: "studentPhone is required" });
+    }
 
     let doc;
     try {
@@ -78,7 +104,11 @@ export const requestEnroll = async (req, res) => {
       });
     } catch (err) {
       if (err.code === 11000) {
-        const exist = await Enrollment.findOne({ studentId: student._id, classId }).lean();
+        const exist = await Enrollment.findOne({
+          studentId: student._id,
+          classId,
+        }).lean();
+
         const classDetails = await classReadableDetails(classId);
 
         return res.status(200).json({
@@ -132,6 +162,52 @@ export const getMyEnrollRequests = async (req, res) => {
 };
 
 // =======================================================
+// STUDENT: MY APPROVED CLASSES
+// GET /api/enroll/my-approved-classes
+// =======================================================
+export const getMyApprovedClasses = async (req, res) => {
+  try {
+    const student = await User.findById(req.user?.id).lean();
+
+    if (!student || student.role !== "student") {
+      return res.status(403).json({ message: "Only students can view this" });
+    }
+
+    const rows = await Enrollment.find({
+      studentId: student._id,
+      status: "approved",
+      isActive: true,
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+
+    const items = [];
+
+    for (const row of rows) {
+      const classDetails = await classReadableDetails(row.classId);
+      if (!classDetails) continue;
+
+      items.push({
+        enrollId: row._id,
+        classId: classDetails.classId,
+        className: classDetails.className || "",
+        grade: classDetails.grade || "",
+        subject: classDetails.subject || "",
+        teachers: classDetails.teachers || [],
+        imageUrl: classDetails.imageUrl || "",
+        status: row.status,
+        approvedAt: row.approvedAt,
+      });
+    }
+
+    return res.status(200).json({ items });
+  } catch (err) {
+    console.error("getMyApprovedClasses error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// =======================================================
 // ADMIN: GET PENDING REQUESTS
 // GET /api/enroll/pending
 // =======================================================
@@ -144,8 +220,6 @@ export const getPendingEnrollRequests = async (req, res) => {
     const enriched = [];
     for (const r of list) {
       const classDetails = await classReadableDetails(r.classId);
-
-      // ✅ student email
       const stu = await User.findById(r.studentId).select("email").lean();
 
       enriched.push({
@@ -169,7 +243,10 @@ export const getPendingEnrollRequests = async (req, res) => {
 export const approveEnrollRequest = async (req, res) => {
   try {
     const { enrollId } = req.params;
-    if (!isValidId(enrollId)) return res.status(400).json({ message: "Invalid enrollId" });
+
+    if (!isValidId(enrollId)) {
+      return res.status(400).json({ message: "Invalid enrollId" });
+    }
 
     const doc = await Enrollment.findById(enrollId);
     if (!doc) return res.status(404).json({ message: "Request not found" });
@@ -181,7 +258,12 @@ export const approveEnrollRequest = async (req, res) => {
     await doc.save();
 
     const classDetails = await classReadableDetails(doc.classId);
-    return res.status(200).json({ message: "Enrollment approved", request: doc, classDetails });
+
+    return res.status(200).json({
+      message: "Enrollment approved",
+      request: doc,
+      classDetails,
+    });
   } catch (err) {
     console.error("approveEnrollRequest error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -195,7 +277,10 @@ export const approveEnrollRequest = async (req, res) => {
 export const rejectEnrollRequest = async (req, res) => {
   try {
     const { enrollId } = req.params;
-    if (!isValidId(enrollId)) return res.status(400).json({ message: "Invalid enrollId" });
+
+    if (!isValidId(enrollId)) {
+      return res.status(400).json({ message: "Invalid enrollId" });
+    }
 
     const doc = await Enrollment.findById(enrollId);
     if (!doc) return res.status(404).json({ message: "Request not found" });
@@ -207,7 +292,12 @@ export const rejectEnrollRequest = async (req, res) => {
     await doc.save();
 
     const classDetails = await classReadableDetails(doc.classId);
-    return res.status(200).json({ message: "Enrollment rejected", request: doc, classDetails });
+
+    return res.status(200).json({
+      message: "Enrollment rejected",
+      request: doc,
+      classDetails,
+    });
   } catch (err) {
     console.error("rejectEnrollRequest error:", err);
     return res.status(500).json({ message: "Internal server error" });

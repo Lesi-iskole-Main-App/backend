@@ -8,23 +8,46 @@ const norm = (v) => String(v || "").trim();
 
 const getClassDetails = async (classId) => {
   const cls = await ClassModel.findById(classId)
-    .populate("gradeId", "grade subjects")
+    .populate("gradeId", "grade subjects streams")
     .populate("teacherIds", "name email phonenumber isApproved role")
     .lean();
 
   if (!cls) return null;
 
-  const gradeNo = cls.gradeId?.grade;
-  const subjectName =
-    (cls.gradeId?.subjects || []).find((s) => String(s._id) === String(cls.subjectId))
-      ?.subject || "Unknown";
+  const gradeNo = Number(cls?.gradeId?.grade || 0);
+
+  let subjectName = "Unknown";
+  let streamName = "";
+
+  // Grades 1-11
+  if (gradeNo >= 1 && gradeNo <= 11) {
+    subjectName =
+      (cls.gradeId?.subjects || []).find(
+        (s) => String(s._id) === String(cls.subjectId)
+      )?.subject || "Unknown";
+  }
+
+  // A/L Grades 12-13
+  if (gradeNo >= 12 && gradeNo <= 13) {
+    const streamObj = (cls.gradeId?.streams || []).find(
+      (s) => String(s._id) === String(cls.streamId)
+    );
+
+    streamName = streamObj?.stream || "Unknown";
+
+    subjectName =
+      (streamObj?.subjects || []).find(
+        (s) => String(s._id) === String(cls.streamSubjectId)
+      )?.subject || "Unknown";
+  }
 
   const teacherNames = (cls.teacherIds || []).map((t) => t?.name).filter(Boolean);
 
   return {
     classId: cls._id,
     className: cls.className,
-    grade: gradeNo,
+    grade: gradeNo || null,
+    stream: streamName,
     subject: subjectName,
     teachers: teacherNames,
   };
@@ -41,7 +64,7 @@ const canStudentViewClassLessons = async (studentId, classId) => {
   return Boolean(ok);
 };
 
-// ✅ CREATE LESSON (admin only) - keep your existing
+// ✅ CREATE LESSON (admin only)
 export const createLesson = async (req, res) => {
   try {
     const { classId, title, date, time, description = "", youtubeUrl = "" } = req.body;
@@ -72,7 +95,9 @@ export const createLesson = async (req, res) => {
   } catch (err) {
     console.error("createLesson error:", err);
     if (err.code === 11000) {
-      return res.status(409).json({ message: "Duplicate lesson (same class + title + date + time)" });
+      return res.status(409).json({
+        message: "Duplicate lesson (same class + title + date + time)",
+      });
     }
     return res.status(500).json({ message: "Internal server error" });
   }
@@ -99,19 +124,13 @@ export const getAllLessons = async (req, res) => {
   }
 };
 
-// =======================================================
-// ✅ STUDENT/ADMIN: GET LESSONS BY CLASS
-// GET /api/lesson/class/:classId
-// - admin: always allowed
-// - student: only if enrolled + approved
-
-
-
-// ✅ UPDATE LESSON (admin only) - keep your existing
+// ✅ UPDATE LESSON (admin only)
 export const updateLessonById = async (req, res) => {
   try {
     const { lessonId } = req.params;
-    if (!isValidId(lessonId)) return res.status(400).json({ message: "Invalid lessonId" });
+    if (!isValidId(lessonId)) {
+      return res.status(400).json({ message: "Invalid lessonId" });
+    }
 
     const doc = await Lesson.findById(lessonId);
     if (!doc) return res.status(404).json({ message: "Lesson not found" });
@@ -119,7 +138,9 @@ export const updateLessonById = async (req, res) => {
     const { classId, title, date, time, description, youtubeUrl, isActive } = req.body;
 
     if (classId !== undefined) {
-      if (!isValidId(classId)) return res.status(400).json({ message: "Invalid classId" });
+      if (!isValidId(classId)) {
+        return res.status(400).json({ message: "Invalid classId" });
+      }
       const classDetails = await getClassDetails(classId);
       if (!classDetails) return res.status(404).json({ message: "Class not found" });
       doc.classId = classId;
@@ -136,21 +157,29 @@ export const updateLessonById = async (req, res) => {
 
     const classDetails = await getClassDetails(doc.classId);
 
-    return res.status(200).json({ message: "Lesson updated", lesson: doc, classDetails });
+    return res.status(200).json({
+      message: "Lesson updated",
+      lesson: doc,
+      classDetails,
+    });
   } catch (err) {
     console.error("updateLessonById error:", err);
     if (err.code === 11000) {
-      return res.status(409).json({ message: "Duplicate lesson (same class + title + date + time)" });
+      return res.status(409).json({
+        message: "Duplicate lesson (same class + title + date + time)",
+      });
     }
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// ✅ DELETE LESSON (admin only) - keep your existing
+// ✅ DELETE LESSON (admin only)
 export const deleteLessonById = async (req, res) => {
   try {
     const { lessonId } = req.params;
-    if (!isValidId(lessonId)) return res.status(400).json({ message: "Invalid lessonId" });
+    if (!isValidId(lessonId)) {
+      return res.status(400).json({ message: "Invalid lessonId" });
+    }
 
     const deleted = await Lesson.findByIdAndDelete(lessonId);
     if (!deleted) return res.status(404).json({ message: "Lesson not found" });
@@ -162,8 +191,6 @@ export const deleteLessonById = async (req, res) => {
   }
 };
 
-
-
 export const getLessonsByClassId = async (req, res) => {
   try {
     const { classId } = req.params;
@@ -172,13 +199,8 @@ export const getLessonsByClassId = async (req, res) => {
       return res.status(400).json({ message: "Invalid classId" });
     }
 
-    // ✅ Ensure class exists
     const cls = await ClassModel.findById(classId).lean();
     if (!cls) return res.status(404).json({ message: "Class not found" });
-
-    // ✅ IMPORTANT CHANGE:
-    // Allow any authenticated student/admin to view lessons
-    // (No enrollment check here)
 
     const lessons = await Lesson.find({ classId, isActive: true })
       .sort({ createdAt: -1 })
@@ -203,17 +225,9 @@ export const getLessonById = async (req, res) => {
     if (!lesson) return res.status(404).json({ message: "Lesson not found" });
     if (!lesson.isActive) return res.status(404).json({ message: "Lesson not found" });
 
-    // ✅ also allow any student/admin (no enrollment check)
     return res.status(200).json({ lesson });
   } catch (err) {
     console.error("getLessonById error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
-
-/* -------------------------
-   Keep your existing exports
-   createLesson / updateLessonById / deleteLessonById / getAllLessons
-   unchanged below if already implemented
-------------------------- */
-
