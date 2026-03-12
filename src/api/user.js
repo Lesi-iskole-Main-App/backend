@@ -7,7 +7,8 @@ import {
   deleteUserById,
   approveTeacher,
   rejectTeacher,
-  saveStudentGradeSelection, // ✅ NEW
+  saveStudentGradeSelection,
+  getMyProfile,
 } from "../application/user.js";
 
 import { authenticate } from "../api/middlewares/authentication.js";
@@ -16,7 +17,12 @@ import { authorize } from "../api/middlewares/authrization.js";
 const router = express.Router();
 
 /* =========================
-   ✅ STUDENT: SAVE ONCE
+   AUTHENTICATED USER
+========================= */
+router.get("/me", authenticate, getMyProfile);
+
+/* =========================
+   STUDENT: SAVE GRADE ONCE
 ========================= */
 router.patch(
   "/student/grade-selection",
@@ -26,18 +32,26 @@ router.patch(
 );
 
 /* =========================
-   ✅ ADMIN ROUTES
+   ADMIN ROUTES
 ========================= */
 router.post("/create", authenticate, authorize(["admin"]), createUser);
+router.get("/", authenticate, authorize(["admin"]), getAllUsers);
+router.get("/:id", authenticate, authorize(["admin"]), getUserById);
 router.put("/:id", authenticate, authorize(["admin"]), updateUser);
 router.delete("/:id", authenticate, authorize(["admin"]), deleteUserById);
 
-router.patch("/:id/approve-teacher", authenticate, authorize(["admin"]), approveTeacher);
-router.patch("/:id/reject-teacher", authenticate, authorize(["admin"]), rejectTeacher);
-router.patch("/student/grade-selection", authenticate, saveStudentGradeSelection);
-router.get("/", authenticate, authorize(["admin"]), getAllUsers);
-router.get("/:id", authenticate, authorize(["admin"]), getUserById);
+router.patch(
+  "/:id/approve-teacher",
+  authenticate,
+  authorize(["admin"]),
+  approveTeacher
+);
 
-
+router.patch(
+  "/:id/reject-teacher",
+  authenticate,
+  authorize(["admin"]),
+  rejectTeacher
+);
 
 export default router;

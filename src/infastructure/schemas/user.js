@@ -36,15 +36,6 @@ const userSchema = new Schema(
   {
     name: { type: String, required: true, trim: true },
 
-    email: {
-      type: String,
-      required: true,
-      unique: true,
-      lowercase: true,
-      trim: true,
-      index: true,
-    },
-
     phonenumber: {
       type: String,
       required: true,
@@ -70,15 +61,15 @@ const userSchema = new Schema(
 
     isActive: { type: Boolean, default: true },
 
-    // student details
     district: {
       type: String,
-      enum: ["", ...DISTRICT_ENUMS], // ✅ only English enum values
+      enum: ["", ...DISTRICT_ENUMS],
       default: "",
     },
     town: { type: String, default: "" },
     address: { type: String, default: "" },
-    birthday: { type: Date, default: null }, // ✅ new
+
+    birthday: { type: Date, default: null },
 
     selectedLanguage: {
       type: String,

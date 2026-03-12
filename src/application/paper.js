@@ -30,7 +30,6 @@ const normalizePaperType = (v) => {
   return map.get(lower) || raw;
 };
 
-// ✅ accept "practice" from FE and map to schema enum "practise"
 const normalizePayment = (v) => {
   const lower = toStr(v).toLowerCase();
   if (lower === "practice") return "practise";
@@ -70,8 +69,6 @@ const getProgressForPaper = async (paper) => {
     currentCount,
     remaining: Math.max(requiredCount - currentCount, 0),
     isComplete: currentCount >= requiredCount,
-
-    // ✅ informational only
     oneQuestionAnswersCount: Number(paper?.oneQuestionAnswersCount || 4),
   };
 };
@@ -477,6 +474,7 @@ export const publishPaperById = async (req, res) => {
 
 /* =========================================================
    ✅ PUBLIC: GET PUBLISHED PAPERS FOR STUDENT APP
+   ordered oldest published first, so FE can rotate day by day
 ========================================================= */
 export const getPublishedPapersPublic = async (req, res) => {
   try {
@@ -532,7 +530,9 @@ export const getPublishedPapersPublic = async (req, res) => {
       query.streamSubjectId = String(sub._id);
     }
 
-    const papers = await Paper.find(query).sort({ createdAt: -1 }).lean();
+    const papers = await Paper.find(query)
+      .sort({ publishedAt: 1, createdAt: 1, _id: 1 })
+      .lean();
 
     const formatted = papers.map((p) => ({
       _id: String(p._id),
@@ -542,6 +542,8 @@ export const getPublishedPapersPublic = async (req, res) => {
       attempts: Number(p.attempts || 1),
       payment: p.payment,
       amount: Number(p.amount || 0),
+      createdAt: p.createdAt || null,
+      publishedAt: p.publishedAt || null,
     }));
 
     return res.status(200).json({ papers: formatted });

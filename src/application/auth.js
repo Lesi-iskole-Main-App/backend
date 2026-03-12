@@ -8,7 +8,7 @@ import User, {
 } from "../infastructure/schemas/user.js";
 import Otp from "../infastructure/schemas/otp.js";
 import { sendWhatsApp } from "../api/whatsapp.js";
-import { sendEmail } from "../api/email.js";
+import { sendSMS } from "../api/sms.js";
 
 const OTP_TTL_MINUTES = 5;
 
@@ -28,7 +28,6 @@ const normalizeDistrict = (district) => {
 const safeUser = (u) => ({
   _id: u._id,
   name: u.name,
-  email: u.email,
   phonenumber: u.phonenumber,
   district: u.district,
   town: u.town,
@@ -73,7 +72,7 @@ const setAuthCookie = (res, token) => {
   });
 };
 
-const sendOtpBoth = async ({ phone, email, otp, purpose }) => {
+const sendOtpBoth = async ({ phone, otp }) => {
   const msg = `Your Lesi Iskole verification code is: ${otp} (valid for ${OTP_TTL_MINUTES} minutes)`;
 
   try {
@@ -82,29 +81,16 @@ const sendOtpBoth = async ({ phone, email, otp, purpose }) => {
     console.error("WhatsApp OTP send failed:", e);
   }
 
-  if (email) {
-    try {
-      await sendEmail({
-        to: email,
-        subject:
-          purpose === "reset_password"
-            ? "Lesi Iskole Password Reset Code"
-            : "Lesi Iskole Verification Code",
-        text: msg,
-      });
-    } catch (e) {
-      console.error("Email OTP send failed:", e);
-    }
+  try {
+    await sendSMS(phone, msg);
+  } catch (e) {
+    console.error("SMS OTP send failed:", e);
   }
 };
 
 const findUserByIdentifier = async (identifier) => {
   const raw = String(identifier || "").trim();
   if (!raw) return null;
-
-  if (raw.includes("@")) {
-    return User.findOne({ email: raw.toLowerCase() });
-  }
 
   const normalizedPhone = normalizeSLPhone(raw);
   return User.findOne({ phonenumber: normalizedPhone });
@@ -114,7 +100,6 @@ export const signUp = async (req, res) => {
   try {
     const {
       name,
-      email,
       whatsappnumber,
       password,
       role,
@@ -124,7 +109,7 @@ export const signUp = async (req, res) => {
       birthday,
     } = req.body;
 
-    if (!name || !email || !whatsappnumber || !password || !role) {
+    if (!name || !whatsappnumber || !password || !role) {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
@@ -167,16 +152,12 @@ export const signUp = async (req, res) => {
     }
 
     const normalizedPhone = normalizeSLPhone(whatsappnumber);
-    const normalizedEmail = String(email).toLowerCase().trim();
 
     const existing = await User.findOne({
-      $or: [{ email: normalizedEmail }, { phonenumber: normalizedPhone }],
+      phonenumber: normalizedPhone,
     });
 
     if (existing && existing.isVerified) {
-      if (existing.email === normalizedEmail) {
-        return res.status(409).json({ message: "Email already in use" });
-      }
       return res
         .status(409)
         .json({ message: "WhatsApp number already in use" });
@@ -184,7 +165,6 @@ export const signUp = async (req, res) => {
 
     if (existing && !existing.isVerified) {
       existing.name = String(name).trim();
-      existing.email = normalizedEmail;
       existing.phonenumber = normalizedPhone;
       existing.role = role;
 
@@ -209,7 +189,6 @@ export const signUp = async (req, res) => {
 
       await Otp.create({
         phonenumber: normalizedPhone,
-        email: normalizedEmail,
         codeHash: hashOtp(otp),
         purpose: "verify_phone",
         expiresAt,
@@ -219,9 +198,7 @@ export const signUp = async (req, res) => {
 
       await sendOtpBoth({
         phone: normalizedPhone,
-        email: normalizedEmail,
         otp,
-        purpose: "verify_phone",
       });
 
       return res.status(200).json({
@@ -234,7 +211,6 @@ export const signUp = async (req, res) => {
 
     const user = await User.create({
       name: String(name).trim(),
-      email: normalizedEmail,
       phonenumber: normalizedPhone,
       password: hashedPass,
       role,
@@ -260,7 +236,6 @@ export const signUp = async (req, res) => {
 
     await Otp.create({
       phonenumber: normalizedPhone,
-      email: normalizedEmail,
       codeHash: hashOtp(otp),
       purpose: "verify_phone",
       expiresAt,
@@ -270,9 +245,7 @@ export const signUp = async (req, res) => {
 
     await sendOtpBoth({
       phone: normalizedPhone,
-      email: normalizedEmail,
       otp,
-      purpose: "verify_phone",
     });
 
     return res
@@ -282,7 +255,7 @@ export const signUp = async (req, res) => {
     console.error("signUp error:", err);
 
     if (err?.code === 11000) {
-      return res.status(409).json({ message: "Duplicate email or phone" });
+      return res.status(409).json({ message: "Duplicate phone" });
     }
 
     return res.status(500).json({ message: "Internal server error" });
@@ -334,7 +307,9 @@ export const verifyCode = async (req, res) => {
     }).sort({ createdAt: -1 });
 
     if (!otpDoc) {
-      return res.status(400).json({ message: "No OTP found. Please resend code." });
+      return res
+        .status(400)
+        .json({ message: "No OTP found. Please resend code." });
     }
 
     if (Date.now() > new Date(otpDoc.expiresAt).getTime()) {
@@ -372,7 +347,7 @@ export const verifyCode = async (req, res) => {
 
     return res.status(200).json({
       message: "Reset OTP verified",
-      identifier: identifier || user?.email || user?.phonenumber || "",
+      identifier: user?.phonenumber || "",
     });
   } catch (err) {
     console.error("verifyCode error:", err);
@@ -406,7 +381,6 @@ export const sendVerificationCode = async (req, res) => {
 
     await Otp.create({
       phonenumber: normalizedPhone,
-      email: user.email || "",
       codeHash: hashOtp(otp),
       purpose: "verify_phone",
       expiresAt,
@@ -416,9 +390,7 @@ export const sendVerificationCode = async (req, res) => {
 
     await sendOtpBoth({
       phone: normalizedPhone,
-      email: user.email,
       otp,
-      purpose: "verify_phone",
     });
 
     return res.status(200).json({ message: "OTP sent" });
@@ -498,17 +470,18 @@ export const forgotPasswordSendOtp = async (req, res) => {
     if (!raw) {
       return res
         .status(400)
-        .json({ message: "Please enter your email or phone number" });
+        .json({ message: "Please enter your phone number" });
     }
 
     const user = await findUserByIdentifier(raw);
     if (!user) {
-      return res.status(404).json({ message: "No account found for this email or phone number" });
+      return res.status(404).json({ message: "No account found for this phone number" });
     }
 
     if (!user.isVerified) {
       return res.status(403).json({
-        message: "This account is not verified yet. Please complete signup OTP verification first.",
+        message:
+          "This account is not verified yet. Please complete signup OTP verification first.",
       });
     }
 
@@ -523,7 +496,6 @@ export const forgotPasswordSendOtp = async (req, res) => {
 
     await Otp.create({
       phonenumber: user.phonenumber,
-      email: user.email || "",
       codeHash: hashOtp(otp),
       purpose: "reset_password",
       expiresAt,
@@ -533,15 +505,12 @@ export const forgotPasswordSendOtp = async (req, res) => {
 
     await sendOtpBoth({
       phone: user.phonenumber,
-      email: user.email,
       otp,
-      purpose: "reset_password",
     });
 
     return res.status(200).json({
-      message: "OTP sent to your WhatsApp and email",
+      message: "OTP sent to your WhatsApp and SMS",
       phone: user.phonenumber,
-      email: user.email,
     });
   } catch (err) {
     console.error("forgotPasswordSendOtp error:", err);
@@ -555,9 +524,7 @@ export const forgotPasswordReset = async (req, res) => {
 
     const raw = String(identifier || "").trim();
     if (!raw) {
-      return res
-        .status(400)
-        .json({ message: "identifier is required" });
+      return res.status(400).json({ message: "identifier is required" });
     }
 
     if (!code || String(code).trim().length !== 6) {
@@ -591,7 +558,9 @@ export const forgotPasswordReset = async (req, res) => {
     }).sort({ createdAt: -1 });
 
     if (!otpDoc) {
-      return res.status(400).json({ message: "No reset OTP found. Please request a new OTP." });
+      return res
+        .status(400)
+        .json({ message: "No reset OTP found. Please request a new OTP." });
     }
 
     if (Date.now() > new Date(otpDoc.expiresAt).getTime()) {

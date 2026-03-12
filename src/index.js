@@ -28,39 +28,30 @@ import teachersAssignedClassReportRouter from "./api/TeachersAssignedClassReport
 import teachersAssignedResultReportRouter from "./api/TeachersAssignedResultReport.js";
 import studentRouter from "./api/student.js";
 import recordingRouter from "./api/recording.js";
-// ✅ NEW
 import adminResultReportRouter from "./api/AdminResultReport.js";
+import reviewRouter from "./api/review.js";
 
 const app = express();
 
-// ✅ allow multiple frontends (student + admin + teacher + local dev)
 const allowedOrigins = [
-  process.env.FRONTEND_URL, // student web
-  process.env.ADMIN_URL, // admin panel
-  process.env.TEACHER_URL, // teacher panel
-
-  // optional local dev urls
+  process.env.FRONTEND_URL,
+  process.env.ADMIN_URL,
+  process.env.TEACHER_URL,
   process.env.LOCAL_WEB_URL,
   process.env.LOCAL_ADMIN_URL,
   process.env.LOCAL_TEACHER_URL,
-
-  // common local defaults (safe)
   "http://localhost:5173",
   "http://localhost:5174",
   "http://localhost:5175",
   "http://localhost:8081",
 ].filter(Boolean);
 
-// ✅ important for cookies on cross-site requests
 app.set("trust proxy", 1);
 
-// ✅ build ONE cors middleware so we can reuse for preflight too
 const corsMiddleware = cors({
   origin: (origin, cb) => {
-    // allow server-to-server / curl / mobile apps without Origin header
     if (!origin) return cb(null, true);
 
-    // normalize origin (remove trailing slash)
     const cleanOrigin = String(origin).replace(/\/$/, "");
 
     const ok = allowedOrigins
@@ -78,21 +69,18 @@ const corsMiddleware = cors({
 });
 
 app.use(corsMiddleware);
-
-// ✅ preflight (Express 5 compatible)
 app.options(/.*/, corsMiddleware);
 
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// routes
 app.use("/api/auth", authRouter);
 app.use("/api/user", userRouter);
 app.use("/api/grade", gradeRouter);
 app.use("/api/class", classRouter);
 app.use("/api/teacher", teacherAssignmentRouter);
-app.use("/api/live", liveRouter); // ✅ removed "sz"
+app.use("/api/live", liveRouter);
 app.use("/api/lesson", lessonRouter);
 app.use("/api/enroll", enrollRouter);
 app.use("/api/recording", recordingRouter);
@@ -112,12 +100,12 @@ app.use(
   teachersAssignedResultReportRouter
 );
 app.use("/api/student", studentRouter);
+app.use("/api/admin-result-report", adminResultReportRouter);
+app.use("/api/review", reviewRouter);
+
 app.get("/", (req, res) => res.send("OK"));
 app.get("/api/health", (req, res) => res.json({ ok: true }));
-// ✅ NEW
-app.use("/api/admin-result-report", adminResultReportRouter);
 
-// error handler
 app.use(GlobalErrorHandler);
 
 connectDB();
