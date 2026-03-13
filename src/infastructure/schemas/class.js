@@ -5,13 +5,13 @@ const classSchema = new Schema(
   {
     className: { type: String, required: true, trim: true },
 
-    // grade 1-13
+    // normal grade doc OR single al doc
     gradeId: { type: Schema.Types.ObjectId, ref: "Grade", required: true },
 
-    // grade 1-11 => use subjectId
+    // grades 1-11
     subjectId: { type: Schema.Types.ObjectId, default: null },
 
-    // grade 12-13 => use streamId + streamSubjectId
+    // A/L
     streamId: { type: Schema.Types.ObjectId, default: null },
     streamSubjectId: { type: Schema.Types.ObjectId, default: null },
 
@@ -26,16 +26,36 @@ const classSchema = new Schema(
   { timestamps: true }
 );
 
-// prevent duplicates for same class setup
+// normal duplicate
 classSchema.index(
   {
     className: 1,
     gradeId: 1,
     subjectId: 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: {
+      subjectId: { $type: "objectId" },
+    },
+  }
+);
+
+// A/L duplicate
+classSchema.index(
+  {
+    className: 1,
+    gradeId: 1,
     streamId: 1,
     streamSubjectId: 1,
   },
-  { unique: true }
+  {
+    unique: true,
+    partialFilterExpression: {
+      streamId: { $type: "objectId" },
+      streamSubjectId: { $type: "objectId" },
+    },
+  }
 );
 
 const ClassModel = mongoose.models.Class || mongoose.model("Class", classSchema);

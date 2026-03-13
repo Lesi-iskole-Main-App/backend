@@ -1,39 +1,205 @@
-// backend/application/grade.js
 import mongoose from "mongoose";
-import Grade from "../infastructure/schemas/grade.js";
+import Grade, { AL_STREAM_ENUM } from "../infastructure/schemas/grade.js";
 
-const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(String(id || ""));
+const isValidObjectId = (id) =>
+  mongoose.Types.ObjectId.isValid(String(id || ""));
 
 const toStr = (x) => String(x || "").trim();
+const toKey = (x) => String(x || "").trim().toLowerCase();
+const normalizeALStream = (value) => toKey(value).replace(/\s+/g, "_");
+
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
+
+const attachStreamLabels = (streams = []) =>
+  streams.map((s) => ({
+    ...(typeof s?.toObject === "function" ? s.toObject() : s),
+    label: AL_STREAM_LABELS[s?.stream] || s?.stream,
+  }));
+
+const normalizeLegacyALDocInMemory = (gradeDoc) => {
+  if (!gradeDoc || gradeDoc.flowType !== "al") return gradeDoc;
+
+  const existingMap = new Map(
+    (gradeDoc.streams || []).map((s) => [normalizeALStream(s.stream), s])
+  );
+
+  const rebuilt = AL_STREAM_ENUM.map((streamName) => {
+    const existing = existingMap.get(streamName);
+
+    if (existing) {
+      existing.stream = streamName;
+      existing.subjects = Array.isArray(existing.subjects) ? existing.subjects : [];
+      return existing;
+    }
+
+    return {
+      stream: streamName,
+      subjects: [],
+    };
+  });
+
+  gradeDoc.streams = rebuilt;
+  gradeDoc.subjects = [];
+
+  if (!gradeDoc.title) {
+    gradeDoc.title =
+      gradeDoc.grade && (gradeDoc.grade === 12 || gradeDoc.grade === 13)
+        ? `Grade ${gradeDoc.grade}`
+        : "A/L";
+  }
+
+  return gradeDoc;
+};
+
+const buildSafeGradeResponse = (gradeDoc) => {
+  if (!gradeDoc) return null;
+
+  const obj =
+    typeof gradeDoc.toObject === "function" ? gradeDoc.toObject() : { ...gradeDoc };
+
+  if (obj.flowType === "al") {
+    obj.subjects = [];
+    obj.streams = attachStreamLabels(
+      Array.isArray(obj.streams) ? obj.streams : []
+    );
+  }
+
+  return obj;
+};
+
+const mergeALStreamsFromGrades = (gradeDocs = []) => {
+  const map = new Map();
+
+  for (const streamName of AL_STREAM_ENUM) {
+    map.set(streamName, {
+      _id: `al-${streamName}`,
+      stream: streamName,
+      label: AL_STREAM_LABELS[streamName] || streamName,
+      gradeNumbers: [],
+      subjects: [],
+    });
+  }
+
+  for (const gradeDoc of gradeDocs) {
+    normalizeLegacyALDocInMemory(gradeDoc);
+
+    for (const st of gradeDoc.streams || []) {
+      const key = normalizeALStream(st?.stream);
+      if (!map.has(key)) continue;
+
+      const target = map.get(key);
+
+      if (
+        Number.isInteger(gradeDoc?.grade) &&
+        !target.gradeNumbers.includes(gradeDoc.grade)
+      ) {
+        target.gradeNumbers.push(gradeDoc.grade);
+      }
+
+      const existingSubjectKeys = new Set(
+        (target.subjects || []).map((sub) => toKey(sub.subject))
+      );
+
+      for (const sub of st?.subjects || []) {
+        const subjectName = toStr(sub?.subject);
+        const subjectKey = toKey(subjectName);
+        if (!subjectKey || existingSubjectKeys.has(subjectKey)) continue;
+
+        target.subjects.push({
+          _id: sub?._id || new mongoose.Types.ObjectId(),
+          subject: subjectName,
+        });
+
+        existingSubjectKeys.add(subjectKey);
+      }
+    }
+  }
+
+  return Array.from(map.values())
+    .filter((s) => s.gradeNumbers.length > 0 || s.subjects.length > 0)
+    .sort((a, b) => a.label.localeCompare(b.label));
+};
 
 /* =========================================================
-   ✅ ADMIN: Grades
+   ADMIN: Grades
 ========================================================= */
 
 export const createGrade = async (req, res) => {
   try {
-    const gradeNumber = Number(req.body?.grade);
+    const rawGrade = req.body?.grade;
+    const flowTypeInput = toKey(req.body?.flowType);
+    const gradeNumber = Number(rawGrade);
 
-    if (!gradeNumber || gradeNumber < 1 || gradeNumber > 13) {
-      return res.status(400).json({ message: "grade must be between 1 and 13" });
+    const wantsAL =
+      flowTypeInput === "al" || gradeNumber === 12 || gradeNumber === 13;
+
+    const wantsNormal =
+      flowTypeInput === "normal" ||
+      (Number.isInteger(gradeNumber) && gradeNumber >= 1 && gradeNumber <= 11);
+
+    if (!wantsAL && !wantsNormal) {
+      return res.status(400).json({
+        message: "grade must be between 1 and 13",
+      });
     }
 
-    const exists = await Grade.findOne({ grade: gradeNumber });
+    if (wantsAL && !(gradeNumber === 12 || gradeNumber === 13)) {
+      return res.status(400).json({
+        message: "A/L grades must be 12 or 13",
+      });
+    }
+
+    if (wantsNormal && !(gradeNumber >= 1 && gradeNumber <= 11)) {
+      return res.status(400).json({
+        message: "Normal grades must be between 1 and 11",
+      });
+    }
+
+    const finalFlowType = wantsAL ? "al" : "normal";
+
+    const exists = await Grade.findOne({
+      flowType: finalFlowType,
+      grade: gradeNumber,
+    });
+
     if (exists) {
-      return res.status(409).json({ message: "Grade already exists", grade: exists });
+      return res.status(409).json({
+        message: "Grade already exists",
+        grade: buildSafeGradeResponse(exists),
+      });
     }
 
     const grade = await Grade.create({
+      flowType: finalFlowType,
       grade: gradeNumber,
+      title: `Grade ${gradeNumber}`,
       subjects: [],
-      streams: [],
+      streams:
+        finalFlowType === "al"
+          ? AL_STREAM_ENUM.map((stream) => ({
+              stream,
+              subjects: [],
+            }))
+          : [],
       isActive: true,
-      createdBy: req.user?._id || null,
+      createdBy: req.user?.id || null,
     });
 
-    return res.status(201).json({ grade });
+    return res.status(201).json({ grade: buildSafeGradeResponse(grade) });
   } catch (err) {
     console.error("createGrade error:", err);
+
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "Grade already exists" });
+    }
+
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -41,17 +207,25 @@ export const createGrade = async (req, res) => {
 export const updateGradeById = async (req, res) => {
   try {
     const { gradeId } = req.params;
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
 
-    // allow updating isActive only (safe)
-    const isActive = req.body?.isActive;
-    const patch = {};
-    if (typeof isActive === "boolean") patch.isActive = isActive;
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
 
-    const updated = await Grade.findByIdAndUpdate(gradeId, patch, { new: true });
-    if (!updated) return res.status(404).json({ message: "Grade not found" });
+    const grade = await Grade.findById(gradeId);
+    if (!grade) return res.status(404).json({ message: "Grade not found" });
 
-    return res.status(200).json({ grade: updated });
+    if (typeof req.body?.isActive === "boolean") {
+      grade.isActive = req.body.isActive;
+    }
+
+    if (grade.flowType === "al") {
+      normalizeLegacyALDocInMemory(grade);
+    }
+
+    await grade.save();
+
+    return res.status(200).json({ grade: buildSafeGradeResponse(grade) });
   } catch (err) {
     console.error("updateGradeById error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -61,7 +235,10 @@ export const updateGradeById = async (req, res) => {
 export const deleteGradeById = async (req, res) => {
   try {
     const { gradeId } = req.params;
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
+
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
 
     const deleted = await Grade.findByIdAndDelete(gradeId);
     if (!deleted) return res.status(404).json({ message: "Grade not found" });
@@ -74,21 +251,25 @@ export const deleteGradeById = async (req, res) => {
 };
 
 /* =========================================================
-   ✅ ADMIN: Subjects (Grades 1..11)
-   Frontend uses:
-   - GET    /subjects/:gradeId
-   - POST   /subject
-   - PATCH  /subject/:gradeId/:subjectId
-   - DELETE /subject/:gradeId/:subjectId
+   ADMIN: Subjects (Grades 1..11)
 ========================================================= */
 
 export const getSubjectsByGrade = async (req, res) => {
   try {
     const { gradeId } = req.params;
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
+
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
+
+    if (grade.flowType !== "normal") {
+      return res
+        .status(400)
+        .json({ message: "This endpoint is only for grades 1-11" });
+    }
 
     return res.status(200).json({ subjects: grade.subjects || [] });
   } catch (err) {
@@ -102,18 +283,30 @@ export const createSubject = async (req, res) => {
     const gradeId = req.body?.gradeId;
     const subject = toStr(req.body?.subject);
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!subject) return res.status(400).json({ message: "subject is required" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!subject) {
+      return res.status(400).json({ message: "subject is required" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
 
-    if (grade.grade >= 12) {
-      return res.status(400).json({ message: "Subjects are only allowed for grades 1-11" });
+    if (grade.flowType !== "normal") {
+      return res
+        .status(400)
+        .json({ message: "Subjects here are only allowed for grades 1-11" });
     }
 
-    const dup = (grade.subjects || []).some((s) => toStr(s.subject).toLowerCase() === subject.toLowerCase());
-    if (dup) return res.status(409).json({ message: "Subject already exists" });
+    const dup = (grade.subjects || []).some(
+      (s) => toStr(s.subject).toLowerCase() === subject.toLowerCase()
+    );
+
+    if (dup) {
+      return res.status(409).json({ message: "Subject already exists" });
+    }
 
     grade.subjects.push({ subject });
     await grade.save();
@@ -130,15 +323,39 @@ export const updateSubjectById = async (req, res) => {
     const { gradeId, subjectId } = req.params;
     const subject = toStr(req.body?.subject);
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(subjectId)) return res.status(400).json({ message: "Invalid subjectId" });
-    if (!subject) return res.status(400).json({ message: "subject is required" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!isValidObjectId(subjectId)) {
+      return res.status(400).json({ message: "Invalid subjectId" });
+    }
+
+    if (!subject) {
+      return res.status(400).json({ message: "subject is required" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
 
+    if (grade.flowType !== "normal") {
+      return res
+        .status(400)
+        .json({ message: "This endpoint is only for grades 1-11" });
+    }
+
     const sub = (grade.subjects || []).id(subjectId);
     if (!sub) return res.status(404).json({ message: "Subject not found" });
+
+    const dup = (grade.subjects || []).some(
+      (s) =>
+        String(s._id) !== String(subjectId) &&
+        toStr(s.subject).toLowerCase() === subject.toLowerCase()
+    );
+
+    if (dup) {
+      return res.status(409).json({ message: "Subject already exists" });
+    }
 
     sub.subject = subject;
     await grade.save();
@@ -154,11 +371,22 @@ export const deleteSubjectById = async (req, res) => {
   try {
     const { gradeId, subjectId } = req.params;
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(subjectId)) return res.status(400).json({ message: "Invalid subjectId" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!isValidObjectId(subjectId)) {
+      return res.status(400).json({ message: "Invalid subjectId" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
+
+    if (grade.flowType !== "normal") {
+      return res
+        .status(400)
+        .json({ message: "This endpoint is only for grades 1-11" });
+    }
 
     const sub = (grade.subjects || []).id(subjectId);
     if (!sub) return res.status(404).json({ message: "Subject not found" });
@@ -174,23 +402,31 @@ export const deleteSubjectById = async (req, res) => {
 };
 
 /* =========================================================
-   ✅ ADMIN: Streams (Grades 12..13)
-   Frontend uses:
-   - GET    /streams/:gradeId
-   - POST   /stream
-   - PATCH  /stream/:gradeId/:streamId
-   - DELETE /stream/:gradeId/:streamId
+   ADMIN: A/L Streams (READ ONLY PREDEFINED)
 ========================================================= */
 
 export const getStreamsByGradeId = async (req, res) => {
   try {
     const { gradeId } = req.params;
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
+
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
 
-    return res.status(200).json({ streams: grade.streams || [] });
+    if (grade.flowType !== "al") {
+      return res
+        .status(400)
+        .json({ message: "Streams are only available for A/L grades" });
+    }
+
+    normalizeLegacyALDocInMemory(grade);
+
+    return res.status(200).json({
+      streams: attachStreamLabels(grade.streams || []),
+    });
   } catch (err) {
     console.error("getStreamsByGradeId error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -198,99 +434,49 @@ export const getStreamsByGradeId = async (req, res) => {
 };
 
 export const createStream = async (req, res) => {
-  try {
-    const gradeId = req.body?.gradeId;
-    const stream = toStr(req.body?.stream);
-
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!stream) return res.status(400).json({ message: "stream is required" });
-
-    const grade = await Grade.findById(gradeId);
-    if (!grade) return res.status(404).json({ message: "Grade not found" });
-
-    if (grade.grade < 12) {
-      return res.status(400).json({ message: "Streams are only allowed for grades 12-13" });
-    }
-
-    const dup = (grade.streams || []).some((s) => toStr(s.stream).toLowerCase() === stream.toLowerCase());
-    if (dup) return res.status(409).json({ message: "Stream already exists" });
-
-    grade.streams.push({ stream, subjects: [] });
-    await grade.save();
-
-    return res.status(201).json({ streams: grade.streams });
-  } catch (err) {
-    console.error("createStream error:", err);
-    return res.status(500).json({ message: "Internal server error" });
-  }
+  return res.status(400).json({
+    message: "A/L streams are predefined. You cannot create streams manually.",
+  });
 };
 
 export const updateStreamById = async (req, res) => {
-  try {
-    const { gradeId, streamId } = req.params;
-    const stream = toStr(req.body?.stream);
-
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(streamId)) return res.status(400).json({ message: "Invalid streamId" });
-    if (!stream) return res.status(400).json({ message: "stream is required" });
-
-    const grade = await Grade.findById(gradeId);
-    if (!grade) return res.status(404).json({ message: "Grade not found" });
-
-    const st = (grade.streams || []).id(streamId);
-    if (!st) return res.status(404).json({ message: "Stream not found" });
-
-    st.stream = stream;
-    await grade.save();
-
-    return res.status(200).json({ streams: grade.streams });
-  } catch (err) {
-    console.error("updateStreamById error:", err);
-    return res.status(500).json({ message: "Internal server error" });
-  }
+  return res.status(400).json({
+    message: "A/L streams are predefined. You cannot edit stream names.",
+  });
 };
 
 export const deleteStreamById = async (req, res) => {
-  try {
-    const { gradeId, streamId } = req.params;
-
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(streamId)) return res.status(400).json({ message: "Invalid streamId" });
-
-    const grade = await Grade.findById(gradeId);
-    if (!grade) return res.status(404).json({ message: "Grade not found" });
-
-    const st = (grade.streams || []).id(streamId);
-    if (!st) return res.status(404).json({ message: "Stream not found" });
-
-    st.deleteOne();
-    await grade.save();
-
-    return res.status(200).json({ streams: grade.streams });
-  } catch (err) {
-    console.error("deleteStreamById error:", err);
-    return res.status(500).json({ message: "Internal server error" });
-  }
+  return res.status(400).json({
+    message: "A/L streams are predefined. You cannot delete streams.",
+  });
 };
 
 /* =========================================================
-   ✅ ADMIN: Stream Subjects (Grades 12..13)
-   Frontend uses:
-   - GET    /stream/subjects/:gradeId/:streamId
-   - POST   /stream/subject
-   - PATCH  /stream/subject/:gradeId/:streamId/:subjectId
-   - DELETE /stream/subject/:gradeId/:streamId/:subjectId
+   ADMIN: A/L Stream Subjects
 ========================================================= */
 
 export const getStreamSubjects = async (req, res) => {
   try {
     const { gradeId, streamId } = req.params;
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(streamId)) return res.status(400).json({ message: "Invalid streamId" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!isValidObjectId(streamId)) {
+      return res.status(400).json({ message: "Invalid streamId" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
+
+    if (grade.flowType !== "al") {
+      return res
+        .status(400)
+        .json({ message: "Stream subjects are only for A/L grades" });
+    }
+
+    normalizeLegacyALDocInMemory(grade);
 
     const st = (grade.streams || []).id(streamId);
     if (!st) return res.status(404).json({ message: "Stream not found" });
@@ -308,18 +494,41 @@ export const createStreamSubject = async (req, res) => {
     const streamId = req.body?.streamId;
     const subject = toStr(req.body?.subject);
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(streamId)) return res.status(400).json({ message: "Invalid streamId" });
-    if (!subject) return res.status(400).json({ message: "subject is required" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!isValidObjectId(streamId)) {
+      return res.status(400).json({ message: "Invalid streamId" });
+    }
+
+    if (!subject) {
+      return res.status(400).json({ message: "subject is required" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
 
+    if (grade.flowType !== "al") {
+      return res
+        .status(400)
+        .json({ message: "Stream subjects are only allowed for A/L" });
+    }
+
+    normalizeLegacyALDocInMemory(grade);
+
     const st = (grade.streams || []).id(streamId);
     if (!st) return res.status(404).json({ message: "Stream not found" });
 
-    const dup = (st.subjects || []).some((s) => toStr(s.subject).toLowerCase() === subject.toLowerCase());
-    if (dup) return res.status(409).json({ message: "Subject already exists in this stream" });
+    const dup = (st.subjects || []).some(
+      (s) => toStr(s.subject).toLowerCase() === subject.toLowerCase()
+    );
+
+    if (dup) {
+      return res
+        .status(409)
+        .json({ message: "Subject already exists in this stream" });
+    }
 
     st.subjects.push({ subject });
     await grade.save();
@@ -336,19 +545,52 @@ export const updateStreamSubjectById = async (req, res) => {
     const { gradeId, streamId, subjectId } = req.params;
     const subject = toStr(req.body?.subject);
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(streamId)) return res.status(400).json({ message: "Invalid streamId" });
-    if (!isValidObjectId(subjectId)) return res.status(400).json({ message: "Invalid subjectId" });
-    if (!subject) return res.status(400).json({ message: "subject is required" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!isValidObjectId(streamId)) {
+      return res.status(400).json({ message: "Invalid streamId" });
+    }
+
+    if (!isValidObjectId(subjectId)) {
+      return res.status(400).json({ message: "Invalid subjectId" });
+    }
+
+    if (!subject) {
+      return res.status(400).json({ message: "subject is required" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
+
+    if (grade.flowType !== "al") {
+      return res
+        .status(400)
+        .json({ message: "Stream subjects are only for A/L" });
+    }
+
+    normalizeLegacyALDocInMemory(grade);
 
     const st = (grade.streams || []).id(streamId);
     if (!st) return res.status(404).json({ message: "Stream not found" });
 
     const sub = (st.subjects || []).id(subjectId);
-    if (!sub) return res.status(404).json({ message: "Stream subject not found" });
+    if (!sub) {
+      return res.status(404).json({ message: "Stream subject not found" });
+    }
+
+    const dup = (st.subjects || []).some(
+      (s) =>
+        String(s._id) !== String(subjectId) &&
+        toStr(s.subject).toLowerCase() === subject.toLowerCase()
+    );
+
+    if (dup) {
+      return res
+        .status(409)
+        .json({ message: "Subject already exists in this stream" });
+    }
 
     sub.subject = subject;
     await grade.save();
@@ -364,18 +606,36 @@ export const deleteStreamSubjectById = async (req, res) => {
   try {
     const { gradeId, streamId, subjectId } = req.params;
 
-    if (!isValidObjectId(gradeId)) return res.status(400).json({ message: "Invalid gradeId" });
-    if (!isValidObjectId(streamId)) return res.status(400).json({ message: "Invalid streamId" });
-    if (!isValidObjectId(subjectId)) return res.status(400).json({ message: "Invalid subjectId" });
+    if (!isValidObjectId(gradeId)) {
+      return res.status(400).json({ message: "Invalid gradeId" });
+    }
+
+    if (!isValidObjectId(streamId)) {
+      return res.status(400).json({ message: "Invalid streamId" });
+    }
+
+    if (!isValidObjectId(subjectId)) {
+      return res.status(400).json({ message: "Invalid subjectId" });
+    }
 
     const grade = await Grade.findById(gradeId);
     if (!grade) return res.status(404).json({ message: "Grade not found" });
+
+    if (grade.flowType !== "al") {
+      return res
+        .status(400)
+        .json({ message: "Stream subjects are only for A/L" });
+    }
+
+    normalizeLegacyALDocInMemory(grade);
 
     const st = (grade.streams || []).id(streamId);
     if (!st) return res.status(404).json({ message: "Stream not found" });
 
     const sub = (st.subjects || []).id(subjectId);
-    if (!sub) return res.status(404).json({ message: "Stream subject not found" });
+    if (!sub) {
+      return res.status(404).json({ message: "Stream subject not found" });
+    }
 
     sub.deleteOne();
     await grade.save();
@@ -388,87 +648,124 @@ export const deleteStreamSubjectById = async (req, res) => {
 };
 
 /* =========================================================
-   ✅ PUBLIC: Student App
+   PUBLIC
 ========================================================= */
 
-// ✅ PUBLIC: get active grades
 export const getGradesPublic = async (req, res) => {
   try {
-    const grades = await Grade.find({ isActive: true }).sort({ grade: 1 });
-    return res.status(200).json({ grades });
+    const grades = await Grade.find({ isActive: true }).sort({ flowType: 1, grade: 1 });
+
+    const safeGrades = grades.map((g) => {
+      if (g.flowType === "al") {
+        normalizeLegacyALDocInMemory(g);
+      }
+      return buildSafeGradeResponse(g);
+    });
+
+    return res.status(200).json({ grades: safeGrades });
   } catch (err) {
     console.error("getGradesPublic error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// ✅ PUBLIC: get streams for grade 12/13 (by gradeNumber)
-export const getStreamsPublic = async (req, res) => {
-  try {
-    const gradeNumber = Number(req.params.gradeNumber);
-    if (!gradeNumber || gradeNumber < 1 || gradeNumber > 13) {
-      return res.status(400).json({ message: "Invalid gradeNumber" });
-    }
-
-    const gradeDoc = await Grade.findOne({ grade: gradeNumber, isActive: true });
-    if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
-
-    return res.status(200).json({ streams: gradeDoc.streams || [] });
-  } catch (err) {
-    console.error("getStreamsPublic error:", err);
-    return res.status(500).json({ message: "Internal server error" });
-  }
-};
-
-// ✅ PUBLIC: grade detail (subjects/streams)
 export const getGradeDetailPublic = async (req, res) => {
   try {
-    const gradeNumber = Number(req.params.gradeNumber);
-    if (!gradeNumber || gradeNumber < 1 || gradeNumber > 13) {
-      return res.status(400).json({ message: "Invalid gradeNumber" });
+    const raw = String(req.params.gradeNumber || "").trim();
+    const gradeNumber = Number(raw);
+
+    if (!Number.isInteger(gradeNumber) || gradeNumber < 1 || gradeNumber > 13) {
+      return res.status(400).json({ message: "Invalid grade number" });
     }
 
-    const gradeDoc = await Grade.findOne({ grade: gradeNumber, isActive: true });
+    const flowType = gradeNumber >= 12 ? "al" : "normal";
+
+    const gradeDoc = await Grade.findOne({
+      flowType,
+      grade: gradeNumber,
+      isActive: true,
+    });
+
     if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
 
-    return res.status(200).json({ grade: gradeDoc });
+    if (gradeDoc.flowType === "al") {
+      normalizeLegacyALDocInMemory(gradeDoc);
+    }
+
+    return res.status(200).json({ grade: buildSafeGradeResponse(gradeDoc) });
   } catch (err) {
     console.error("getGradeDetailPublic error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// ✅ SMART: streams by gradeNumber (12/13) OR by gradeId (ObjectId)
-// This avoids route conflict without changing frontend.
 export const getStreamsSmart = async (req, res) => {
   try {
-    const value = String(req.params.value || "").trim();
+    const value = String(req.params.value || "").trim().toLowerCase();
 
-    // Case 1: value is number (student flow)
-    const asNumber = Number(value);
-    const isNumeric = value !== "" && !Number.isNaN(asNumber);
+    if (value === "al") {
+      const alGrades = await Grade.find({
+        flowType: "al",
+        isActive: true,
+      }).sort({ grade: 1 });
 
-    if (isNumeric) {
-      // allow only grade 12 or 13 (streams exist only there)
-      if (asNumber !== 12 && asNumber !== 13) {
-        return res.status(400).json({ message: "Streams only available for grade 12 or 13" });
+      if (!alGrades.length) {
+        return res.status(404).json({ message: "A/L grades not found" });
       }
 
-      const gradeDoc = await Grade.findOne({ grade: asNumber, isActive: true });
+      const streams = mergeALStreamsFromGrades(alGrades);
+
+      return res.status(200).json({ streams });
+    }
+
+    if (isValidObjectId(value)) {
+      const gradeDoc = await Grade.findById(value);
       if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
 
-      return res.status(200).json({ streams: gradeDoc.streams || [] });
+      if (gradeDoc.flowType !== "al") {
+        return res.status(200).json({ streams: [] });
+      }
+
+      normalizeLegacyALDocInMemory(gradeDoc);
+
+      return res.status(200).json({
+        streams: attachStreamLabels(gradeDoc.streams || []),
+      });
     }
 
-    // Case 2: value is ObjectId (dashboard flow)
-    if (!isValidObjectId(value)) {
-      return res.status(400).json({ message: "Invalid grade id or grade number" });
+    const gradeNumber = Number(value);
+
+    if (!Number.isInteger(gradeNumber) || gradeNumber < 1 || gradeNumber > 13) {
+      return res.status(400).json({ message: "Invalid grade value" });
     }
 
-    const gradeDoc = await Grade.findById(value);
-    if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
+    if (gradeNumber >= 1 && gradeNumber <= 11) {
+      const gradeDoc = await Grade.findOne({
+        flowType: "normal",
+        grade: gradeNumber,
+        isActive: true,
+      });
 
-    return res.status(200).json({ streams: gradeDoc.streams || [] });
+      if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
+
+      return res.status(200).json({ streams: [] });
+    }
+
+    const gradeDoc = await Grade.findOne({
+      flowType: "al",
+      grade: gradeNumber,
+      isActive: true,
+    });
+
+    if (!gradeDoc) {
+      return res.status(404).json({ message: "A/L grade not found" });
+    }
+
+    normalizeLegacyALDocInMemory(gradeDoc);
+
+    return res.status(200).json({
+      streams: attachStreamLabels(gradeDoc.streams || []),
+    });
   } catch (err) {
     console.error("getStreamsSmart error:", err);
     return res.status(500).json({ message: "Internal server error" });

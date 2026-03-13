@@ -1,5 +1,9 @@
 import mongoose from "mongoose";
-import Paper, { PAPER_TYPES, PAYMENT_TYPES, ATTEMPTS_ALLOWED } from "../infastructure/schemas/paper.js";
+import Paper, {
+  PAPER_TYPES,
+  PAYMENT_TYPES,
+  ATTEMPTS_ALLOWED,
+} from "../infastructure/schemas/paper.js";
 import Grade from "../infastructure/schemas/grade.js";
 import Question from "../infastructure/schemas/question.js";
 
@@ -46,14 +50,14 @@ const readablePaperMeta = (paper, grade) => {
 
   if (is1to11(gNo)) {
     subject =
-      (grade.subjects || []).find((s) => String(s._id) === String(paper.subjectId))?.subject ||
-      "Unknown Subject";
+      (grade.subjects || []).find((s) => String(s._id) === String(paper.subjectId))
+        ?.subject || "Unknown Subject";
   } else if (is12or13(gNo)) {
     const st = (grade.streams || []).find((x) => String(x._id) === String(paper.streamId));
     stream = st?.stream || "Unknown Stream";
     subject =
-      (st?.subjects || []).find((s) => String(s._id) === String(paper.streamSubjectId))?.subject ||
-      "Unknown Subject";
+      (st?.subjects || []).find((s) => String(s._id) === String(paper.streamSubjectId))
+        ?.subject || "Unknown Subject";
   }
 
   return { grade: gNo, stream, subject };
@@ -137,7 +141,9 @@ export const createPaper = async (req, res) => {
 
     const pType = normalizePaperType(paperType);
     if (!PAPER_TYPES.includes(pType)) {
-      return res.status(400).json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
+      return res
+        .status(400)
+        .json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
     }
 
     const title = toStr(paperTitle);
@@ -159,7 +165,9 @@ export const createPaper = async (req, res) => {
 
     const pay = normalizePayment(payment);
     if (!PAYMENT_TYPES.includes(pay)) {
-      return res.status(400).json({ message: `payment must be one of: ${PAYMENT_TYPES.join(", ")}` });
+      return res
+        .status(400)
+        .json({ message: `payment must be one of: ${PAYMENT_TYPES.join(", ")}` });
     }
 
     const att = Number(attempts);
@@ -172,14 +180,18 @@ export const createPaper = async (req, res) => {
     let finalStreamSubjectId = null;
 
     if (is1to11(gradeNo)) {
-      if (!isValidId(subjectId)) return res.status(400).json({ message: "subjectId is required for grades 1-11" });
+      if (!isValidId(subjectId)) {
+        return res.status(400).json({ message: "subjectId is required for grades 1-11" });
+      }
 
       const ok = (grade.subjects || []).some((s) => String(s._id) === String(subjectId));
       if (!ok) return res.status(400).json({ message: "subjectId not found in this grade" });
 
       finalSubjectId = subjectId;
     } else if (is12or13(gradeNo)) {
-      if (!isValidId(streamId)) return res.status(400).json({ message: "streamId is required for grade 12-13" });
+      if (!isValidId(streamId)) {
+        return res.status(400).json({ message: "streamId is required for grade 12-13" });
+      }
       if (!isValidId(streamSubjectId)) {
         return res.status(400).json({ message: "streamSubjectId is required for grade 12-13" });
       }
@@ -244,7 +256,7 @@ export const createPaper = async (req, res) => {
 };
 
 /* =========================================================
-   ✅ ADMIN: GET ALL PAPERS (with progress + status)
+   ✅ ADMIN: GET ALL PAPERS
 ========================================================= */
 export const getAllPapers = async (req, res) => {
   try {
@@ -298,7 +310,8 @@ export const updatePaperById = async (req, res) => {
     patch.gradeId = nextGradeId;
 
     if (is1to11(gradeNo)) {
-      const nextSubjectId = req.body.subjectId !== undefined ? req.body.subjectId : existing.subjectId;
+      const nextSubjectId =
+        req.body.subjectId !== undefined ? req.body.subjectId : existing.subjectId;
 
       if (!isValidId(nextSubjectId)) {
         return res.status(400).json({ message: "subjectId is required for grades 1-11" });
@@ -313,9 +326,13 @@ export const updatePaperById = async (req, res) => {
     } else if (is12or13(gradeNo)) {
       const nextStreamId = req.body.streamId !== undefined ? req.body.streamId : existing.streamId;
       const nextStreamSubjectId =
-        req.body.streamSubjectId !== undefined ? req.body.streamSubjectId : existing.streamSubjectId;
+        req.body.streamSubjectId !== undefined
+          ? req.body.streamSubjectId
+          : existing.streamSubjectId;
 
-      if (!isValidId(nextStreamId)) return res.status(400).json({ message: "streamId is required for grade 12-13" });
+      if (!isValidId(nextStreamId)) {
+        return res.status(400).json({ message: "streamId is required for grade 12-13" });
+      }
       if (!isValidId(nextStreamSubjectId)) {
         return res.status(400).json({ message: "streamSubjectId is required for grade 12-13" });
       }
@@ -348,7 +365,9 @@ export const updatePaperById = async (req, res) => {
     if (req.body.paperType !== undefined) {
       const pType = normalizePaperType(req.body.paperType);
       if (!PAPER_TYPES.includes(pType)) {
-        return res.status(400).json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
+        return res
+          .status(400)
+          .json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
       }
       patch.paperType = pType;
     }
@@ -375,20 +394,26 @@ export const updatePaperById = async (req, res) => {
 
     if (req.body.attempts !== undefined) {
       const att = Number(req.body.attempts);
-      if (!ATTEMPTS_ALLOWED.includes(att)) return res.status(400).json({ message: "attempts must be 1, 2, or 3" });
+      if (!ATTEMPTS_ALLOWED.includes(att)) {
+        return res.status(400).json({ message: "attempts must be 1, 2, or 3" });
+      }
       patch.attempts = att;
     }
 
     if (req.body.payment !== undefined) {
       const pay = normalizePayment(req.body.payment);
       if (!PAYMENT_TYPES.includes(pay)) {
-        return res.status(400).json({ message: `payment must be one of: ${PAYMENT_TYPES.join(", ")}` });
+        return res
+          .status(400)
+          .json({ message: `payment must be one of: ${PAYMENT_TYPES.join(", ")}` });
       }
       patch.payment = pay;
 
       if (pay === "paid") {
         const a = Number(req.body.amount);
-        if (!a || a <= 0) return res.status(400).json({ message: "amount must be > 0 for paid papers" });
+        if (!a || a <= 0) {
+          return res.status(400).json({ message: "amount must be > 0 for paid papers" });
+        }
         patch.amount = a;
       } else {
         patch.amount = 0;
@@ -406,7 +431,10 @@ export const updatePaperById = async (req, res) => {
     const progress = await getProgressForPaper(updated);
     const status = computeStatus(updated, progress);
 
-    return res.status(200).json({ message: "Paper updated", paper: { ...updated, meta, progress, status } });
+    return res.status(200).json({
+      message: "Paper updated",
+      paper: { ...updated, meta, progress, status },
+    });
   } catch (err) {
     console.error("updatePaperById error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -432,7 +460,7 @@ export const deletePaperById = async (req, res) => {
 };
 
 /* =========================================================
-   ✅ ADMIN: PUBLISH PAPER (ONLY if complete)
+   ✅ ADMIN: PUBLISH PAPER
 ========================================================= */
 export const publishPaperById = async (req, res) => {
   try {
@@ -474,63 +502,123 @@ export const publishPaperById = async (req, res) => {
 
 /* =========================================================
    ✅ PUBLIC: GET PUBLISHED PAPERS FOR STUDENT APP
-   ordered oldest published first, so FE can rotate day by day
 ========================================================= */
 export const getPublishedPapersPublic = async (req, res) => {
   try {
-    const gradeNumber = Number(req.query?.gradeNumber);
+    const rawGradeNumber = req.query?.gradeNumber;
+    const level = toStr(req.query?.level).toLowerCase();
     const paperType = normalizePaperType(req.query?.paperType || "Model paper");
     const subjectName = toStr(req.query?.subject);
     const streamName = toStr(req.query?.stream);
 
-    if (!gradeNumber || gradeNumber < 1 || gradeNumber > 13) {
-      return res.status(400).json({ message: "Invalid gradeNumber" });
-    }
+    const hasGradeNumber =
+      rawGradeNumber !== undefined &&
+      rawGradeNumber !== null &&
+      rawGradeNumber !== "";
+
+    const gradeNumber = hasGradeNumber ? Number(rawGradeNumber) : null;
 
     if (!PAPER_TYPES.includes(paperType)) {
-      return res.status(400).json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
+      return res
+        .status(400)
+        .json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
     }
 
-    const gradeDoc = await Grade.findOne({ grade: gradeNumber, isActive: true }).lean();
-    if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
+    // Grades 1..11 - old flow unchanged
+    if (hasGradeNumber && gradeNumber >= 1 && gradeNumber <= 11) {
+      const gradeDoc = await Grade.findOne({ grade: gradeNumber, isActive: true }).lean();
+      if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
 
-    const gradeId = String(gradeDoc._id);
-
-    const query = {
-      gradeId,
-      paperType,
-      isActive: true,
-      isPublished: true,
-    };
-
-    if (is1to11(gradeNumber)) {
-      if (!subjectName) return res.status(400).json({ message: "subject is required" });
+      if (!subjectName) {
+        return res.status(400).json({ message: "subject is required" });
+      }
 
       const sub = (gradeDoc.subjects || []).find(
         (s) => toStr(s.subject).toLowerCase() === subjectName.toLowerCase()
       );
       if (!sub) return res.status(404).json({ message: "Subject not found for this grade" });
 
-      query.subjectId = String(sub._id);
-    } else if (is12or13(gradeNumber)) {
-      if (!streamName) return res.status(400).json({ message: "stream is required for A/L" });
-      if (!subjectName) return res.status(400).json({ message: "subject is required" });
+      const papers = await Paper.find({
+        gradeId: String(gradeDoc._id),
+        subjectId: String(sub._id),
+        paperType,
+        isActive: true,
+        isPublished: true,
+      })
+        .sort({ publishedAt: 1, createdAt: 1, _id: 1 })
+        .lean();
 
+      const formatted = papers.map((p) => ({
+        _id: String(p._id),
+        paperTitle: p.paperTitle,
+        questionCount: Number(p.questionCount || 0),
+        timeMinutes: Number(p.timeMinutes || 0),
+        attempts: Number(p.attempts || 1),
+        payment: p.payment,
+        amount: Number(p.amount || 0),
+        createdAt: p.createdAt || null,
+        publishedAt: p.publishedAt || null,
+      }));
+
+      return res.status(200).json({ papers: formatted });
+    }
+
+    // A/L - stream + subject across both 12 and 13
+    const isALRequest =
+      level === "al" ||
+      gradeNumber === 12 ||
+      gradeNumber === 13 ||
+      (!hasGradeNumber && !!streamName);
+
+    if (!isALRequest) {
+      return res.status(400).json({ message: "Invalid gradeNumber or level" });
+    }
+
+    if (!streamName) {
+      return res.status(400).json({ message: "stream is required for A/L" });
+    }
+
+    if (!subjectName) {
+      return res.status(400).json({ message: "subject is required for A/L" });
+    }
+
+    const alGrades = await Grade.find({
+      grade: { $in: [12, 13] },
+      isActive: true,
+    }).lean();
+
+    if (!alGrades.length) {
+      return res.status(404).json({ message: "A/L grade data not found" });
+    }
+
+    const orQuery = [];
+
+    for (const gradeDoc of alGrades) {
       const st = (gradeDoc.streams || []).find(
         (x) => toStr(x.stream).toLowerCase() === streamName.toLowerCase()
       );
-      if (!st) return res.status(404).json({ message: "Stream not found for this grade" });
+      if (!st) continue;
 
       const sub = (st.subjects || []).find(
         (s) => toStr(s.subject).toLowerCase() === subjectName.toLowerCase()
       );
-      if (!sub) return res.status(404).json({ message: "Subject not found for this stream" });
+      if (!sub) continue;
 
-      query.streamId = String(st._id);
-      query.streamSubjectId = String(sub._id);
+      orQuery.push({
+        gradeId: String(gradeDoc._id),
+        streamId: String(st._id),
+        streamSubjectId: String(sub._id),
+        paperType,
+        isActive: true,
+        isPublished: true,
+      });
     }
 
-    const papers = await Paper.find(query)
+    if (!orQuery.length) {
+      return res.status(200).json({ papers: [] });
+    }
+
+    const papers = await Paper.find({ $or: orQuery })
       .sort({ publishedAt: 1, createdAt: 1, _id: 1 })
       .lean();
 

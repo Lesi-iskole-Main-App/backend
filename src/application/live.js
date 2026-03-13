@@ -6,6 +6,25 @@ import Enrollment from "../infastructure/schemas/enrollment.js";
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
+const normalizeZoomLinks = (body = {}) => {
+  if (Array.isArray(body.zoomLinks)) {
+    const cleaned = body.zoomLinks
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+
+    if (cleaned.length > 0) {
+      return cleaned;
+    }
+  }
+
+  if (body.zoomLink) {
+    const single = String(body.zoomLink || "").trim();
+    return single ? [single] : [];
+  }
+
+  return [];
+};
+
 const getSubjectNameFromGrade = (gradeDoc, classObj) => {
   if (!gradeDoc || !classObj) return "—";
 
@@ -61,20 +80,39 @@ const buildClassDetails = (classDoc, gradeDoc) => {
   };
 };
 
+const mapLiveForResponse = (liveDoc, classDetails = null) => {
+  const live = liveDoc?.toObject ? liveDoc.toObject() : liveDoc;
+
+  const zoomLinks = Array.isArray(live?.zoomLinks)
+    ? live.zoomLinks.map((x) => String(x || "").trim()).filter(Boolean)
+    : live?.zoomLink
+    ? [String(live.zoomLink).trim()].filter(Boolean)
+    : [];
+
+  return {
+    ...live,
+    zoomLinks,
+    zoomLink: zoomLinks[0] || "",
+    ...(classDetails ? { classDetails } : {}),
+  };
+};
+
 // CREATE
 export const createLiveByClassId = async (req, res, next) => {
   try {
     const { classId } = req.params;
-    const { title, scheduledAt, zoomLink } = req.body;
+    const { title, scheduledAt } = req.body;
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId" });
     }
 
-    if (!title || !scheduledAt || !zoomLink) {
+    const zoomLinks = normalizeZoomLinks(req.body);
+
+    if (!title || !scheduledAt || zoomLinks.length === 0) {
       return res
         .status(400)
-        .json({ message: "title, scheduledAt and zoomLink are required" });
+        .json({ message: "title, scheduledAt and at least one zoom link are required" });
     }
 
     const foundClass = await ClassModel.findById(classId);
@@ -91,13 +129,14 @@ export const createLiveByClassId = async (req, res, next) => {
       classId,
       title: String(title).trim(),
       scheduledAt: parsedDate,
-      zoomLink: String(zoomLink).trim(),
+      zoomLinks,
+      zoomLink: zoomLinks[0],
       createdBy: req.user?.id || null,
     });
 
     return res.status(201).json({
       message: "Live class created successfully",
-      live,
+      live: mapLiveForResponse(live),
     });
   } catch (err) {
     next(err);
@@ -129,10 +168,9 @@ export const getAllLiveByClassId = async (req, res, next) => {
       isActive: true,
     }).sort({ scheduledAt: 1 });
 
-    const mapped = lives.map((r) => ({
-      ...r.toObject(),
-      classDetails: buildClassDetails(foundClass, gradeDoc),
-    }));
+    const classDetails = buildClassDetails(foundClass, gradeDoc);
+
+    const mapped = lives.map((r) => mapLiveForResponse(r, classDetails));
 
     return res.status(200).json({
       message: "Live classes fetched successfully",
@@ -179,10 +217,7 @@ export const getLiveByClassIdAndLiveId = async (req, res, next) => {
 
     return res.status(200).json({
       message: "Live class fetched successfully",
-      live: {
-        ...live.toObject(),
-        classDetails: buildClassDetails(foundClass, gradeDoc),
-      },
+      live: mapLiveForResponse(live, buildClassDetails(foundClass, gradeDoc)),
     });
   } catch (err) {
     next(err);
@@ -193,7 +228,7 @@ export const getLiveByClassIdAndLiveId = async (req, res, next) => {
 export const updateLiveByClassId = async (req, res, next) => {
   try {
     const { classId, liveId } = req.params;
-    const { title, scheduledAt, zoomLink, isActive } = req.body;
+    const { title, scheduledAt, isActive } = req.body;
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId" });
@@ -222,14 +257,24 @@ export const updateLiveByClassId = async (req, res, next) => {
       live.scheduledAt = parsedDate;
     }
 
-    if (zoomLink !== undefined) live.zoomLink = String(zoomLink).trim();
+    if (req.body.zoomLinks !== undefined || req.body.zoomLink !== undefined) {
+      const zoomLinks = normalizeZoomLinks(req.body);
+      if (zoomLinks.length === 0) {
+        return res
+          .status(400)
+          .json({ message: "At least one zoom link is required" });
+      }
+      live.zoomLinks = zoomLinks;
+      live.zoomLink = zoomLinks[0];
+    }
+
     if (isActive !== undefined) live.isActive = Boolean(isActive);
 
     await live.save();
 
     return res.status(200).json({
       message: "Live class updated successfully",
-      live,
+      live: mapLiveForResponse(live),
     });
   } catch (err) {
     next(err);
@@ -260,7 +305,7 @@ export const deleteLiveByClassId = async (req, res, next) => {
 
     return res.status(200).json({
       message: "Live class deleted successfully",
-      live: deleted,
+      live: mapLiveForResponse(deleted),
     });
   } catch (err) {
     next(err);
@@ -293,10 +338,7 @@ export const getAllLives = async (req, res, next) => {
       const gradeDoc = classDoc ? gradeMap.get(String(classDoc.gradeId)) : null;
       const classDetails = buildClassDetails(classDoc, gradeDoc);
 
-      return {
-        ...r,
-        classDetails,
-      };
+      return mapLiveForResponse(r, classDetails);
     });
 
     return res.status(200).json({
@@ -372,8 +414,7 @@ export const getStudentLives = async (req, res, next) => {
       const classDetails = buildClassDetails(classDoc, gradeDoc);
 
       return {
-        ...live,
-        classDetails,
+        ...mapLiveForResponse(live, classDetails),
         teacherNames: classDetails.teachers || [],
       };
     });
