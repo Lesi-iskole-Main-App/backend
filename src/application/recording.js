@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Recording from "../infastructure/schemas/recording.js";
 import ClassModel from "../infastructure/schemas/class.js";
 import Grade from "../infastructure/schemas/grade.js";
+import Enrollment from "../infastructure/schemas/enrollment.js";
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -58,6 +59,15 @@ const buildClassDetails = (classDoc, gradeDoc) => {
     subject,
     teachers,
   };
+};
+
+const requireApprovedEnrollment = async (studentId, classId) => {
+  return Enrollment.findOne({
+    studentId,
+    classId,
+    status: "approved",
+    isActive: true,
+  }).lean();
 };
 
 // CREATE by classId
@@ -124,6 +134,16 @@ export const getAllRecordingByClassId = async (req, res, next) => {
       return res.status(404).json({ message: "Class not found" });
     }
 
+    const role = String(req.user?.role || "").toLowerCase();
+    if (role === "student") {
+      const approved = await requireApprovedEnrollment(req.user?.id, classId);
+      if (!approved) {
+        return res.status(403).json({
+          message: "Only approved enrolled students can view recordings",
+        });
+      }
+    }
+
     const gradeDoc = await Grade.findById(foundClass.gradeId).lean();
 
     const recordings = await Recording.find({
@@ -165,6 +185,16 @@ export const getRecordingByClassIdAndRecordingId = async (req, res, next) => {
 
     if (!foundClass) {
       return res.status(404).json({ message: "Class not found" });
+    }
+
+    const role = String(req.user?.role || "").toLowerCase();
+    if (role === "student") {
+      const approved = await requireApprovedEnrollment(req.user?.id, classId);
+      if (!approved) {
+        return res.status(403).json({
+          message: "Only approved enrolled students can view recordings",
+        });
+      }
     }
 
     const gradeDoc = await Grade.findById(foundClass.gradeId).lean();

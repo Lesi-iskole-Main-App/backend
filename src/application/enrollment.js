@@ -6,12 +6,25 @@ import Grade from "../infastructure/schemas/grade.js";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
+const normalizeKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
+
 const getSubjectNameFromGrade = (gradeDoc, cls) => {
   if (!gradeDoc || !cls) return "Unknown";
 
-  const gradeNo = Number(gradeDoc?.grade);
-
-  if (gradeNo >= 1 && gradeNo <= 11) {
+  if (gradeDoc.flowType === "normal") {
     return (
       (gradeDoc.subjects || []).find(
         (s) => String(s._id) === String(cls.subjectId)
@@ -19,7 +32,7 @@ const getSubjectNameFromGrade = (gradeDoc, cls) => {
     );
   }
 
-  if (gradeNo >= 12 && gradeNo <= 13) {
+  if (gradeDoc.flowType === "al") {
     const streamObj = (gradeDoc.streams || []).find(
       (s) => String(s._id) === String(cls.streamId)
     );
@@ -34,32 +47,59 @@ const getSubjectNameFromGrade = (gradeDoc, cls) => {
   return "Unknown";
 };
 
-const classReadableDetails = async (classId) => {
-  const cls = await ClassModel.findById(classId)
-    .populate("teacherIds", "name email phonenumber isApproved role")
-    .lean();
+const getStreamNameFromGrade = (gradeDoc, cls) => {
+  if (!gradeDoc || !cls) return "";
+  if (gradeDoc.flowType !== "al") return "";
 
+  const streamObj = (gradeDoc.streams || []).find(
+    (s) => String(s._id) === String(cls.streamId)
+  );
+
+  return String(streamObj?.stream || "").trim();
+};
+
+const getStreamLabel = (streamKey) => {
+  const key = normalizeKey(streamKey);
+  return AL_STREAM_LABELS[key] || String(streamKey || "").trim();
+};
+
+const getLevelFromGradeDoc = (gradeDoc) => {
+  if (!gradeDoc) return "";
+  if (gradeDoc.flowType === "al") return "al";
+  if (gradeDoc.grade >= 1 && gradeDoc.grade <= 5) return "primary";
+  if (gradeDoc.grade >= 6 && gradeDoc.grade <= 11) return "secondary";
+  return "";
+};
+
+const classReadableDetails = async (classId) => {
+  const cls = await ClassModel.findById(classId).lean();
   if (!cls) return null;
 
   const gradeDoc = await Grade.findById(cls.gradeId).lean();
   if (!gradeDoc) return null;
 
-  const teachers = (cls.teacherIds || []).map((t) => t?.name).filter(Boolean);
+  const subject = getSubjectNameFromGrade(gradeDoc, cls);
+  const stream = getStreamNameFromGrade(gradeDoc, cls);
 
   return {
     classId: cls._id,
     className: cls.className,
+    flowType: gradeDoc.flowType || "normal",
+    level: getLevelFromGradeDoc(gradeDoc),
     grade: gradeDoc?.grade ?? null,
-    subject: getSubjectNameFromGrade(gradeDoc, cls),
-    teachers,
+    gradeLabel:
+      gradeDoc.flowType === "al"
+        ? "A/L"
+        : gradeDoc?.grade
+        ? `Grade ${gradeDoc.grade}`
+        : "",
+    stream,
+    streamLabel: stream ? getStreamLabel(stream) : "",
+    subject,
     imageUrl: cls.imageUrl || "",
   };
 };
 
-// =======================================================
-// STUDENT: REQUEST ENROLL
-// POST /api/enroll/request
-// =======================================================
 export const requestEnroll = async (req, res) => {
   try {
     const { classId, studentName, studentPhone } = req.body || {};
@@ -133,10 +173,6 @@ export const requestEnroll = async (req, res) => {
   }
 };
 
-// =======================================================
-// STUDENT: MY REQUESTS
-// GET /api/enroll/my
-// =======================================================
 export const getMyEnrollRequests = async (req, res) => {
   try {
     const student = await User.findById(req.user?.id).lean();
@@ -161,10 +197,6 @@ export const getMyEnrollRequests = async (req, res) => {
   }
 };
 
-// =======================================================
-// STUDENT: MY APPROVED CLASSES
-// GET /api/enroll/my-approved-classes
-// =======================================================
 export const getMyApprovedClasses = async (req, res) => {
   try {
     const student = await User.findById(req.user?.id).lean();
@@ -192,8 +224,12 @@ export const getMyApprovedClasses = async (req, res) => {
         classId: classDetails.classId,
         className: classDetails.className || "",
         grade: classDetails.grade || "",
+        gradeLabel: classDetails.gradeLabel || "",
+        flowType: classDetails.flowType || "normal",
+        level: classDetails.level || "",
+        stream: classDetails.stream || "",
+        streamLabel: classDetails.streamLabel || "",
         subject: classDetails.subject || "",
-        teachers: classDetails.teachers || [],
         imageUrl: classDetails.imageUrl || "",
         status: row.status,
         approvedAt: row.approvedAt,
@@ -207,12 +243,117 @@ export const getMyApprovedClasses = async (req, res) => {
   }
 };
 
-// =======================================================
-// ADMIN: GET PENDING REQUESTS
-// GET /api/enroll/pending
-// =======================================================
+export const getPendingEnrollRequestOptions = async (req, res) => {
+  try {
+    const pendingRows = await Enrollment.find({ status: "pending" })
+      .select("classId")
+      .lean();
+
+    const classIds = [
+      ...new Set(pendingRows.map((r) => String(r.classId)).filter(Boolean)),
+    ];
+
+    if (!classIds.length) {
+      return res.status(200).json({
+        levels: [
+          { value: "primary", label: "Primary" },
+          { value: "secondary", label: "Secondary" },
+          { value: "al", label: "A/L" },
+        ],
+        grades: [],
+        streams: [],
+      });
+    }
+
+    const classDocs = await ClassModel.find({ _id: { $in: classIds }, isActive: true })
+      .select("_id gradeId streamId")
+      .lean();
+
+    const gradeIds = [
+      ...new Set(classDocs.map((c) => String(c.gradeId)).filter(Boolean)),
+    ];
+
+    const gradeDocs = await Grade.find({ _id: { $in: gradeIds }, isActive: true })
+      .select("flowType grade streams")
+      .lean();
+
+    const gradeMap = new Map(gradeDocs.map((g) => [String(g._id), g]));
+
+    const grades = [];
+    const streams = [];
+
+    for (const cls of classDocs) {
+      const gradeDoc = gradeMap.get(String(cls.gradeId));
+      if (!gradeDoc) continue;
+
+      if (gradeDoc.flowType === "normal") {
+        const level = getLevelFromGradeDoc(gradeDoc);
+        grades.push({
+          value: String(gradeDoc.grade),
+          label: `Grade ${gradeDoc.grade}`,
+          level,
+        });
+      } else if (gradeDoc.flowType === "al") {
+        const streamObj = (gradeDoc.streams || []).find(
+          (s) => String(s._id) === String(cls.streamId)
+        );
+
+        if (streamObj?.stream) {
+          streams.push({
+            value: streamObj.stream,
+            label: getStreamLabel(streamObj.stream),
+          });
+        }
+      }
+    }
+
+    const gradeSeen = new Set();
+    const uniqueGrades = grades.filter((g) => {
+      const key = `${g.level}-${g.value}`;
+      if (gradeSeen.has(key)) return false;
+      gradeSeen.add(key);
+      return true;
+    });
+
+    const streamSeen = new Set();
+    const uniqueStreams = streams.filter((s) => {
+      const key = normalizeKey(s.value);
+      if (streamSeen.has(key)) return false;
+      streamSeen.add(key);
+      return true;
+    });
+
+    uniqueGrades.sort((a, b) => Number(a.value) - Number(b.value));
+    uniqueStreams.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+
+    return res.status(200).json({
+      levels: [
+        { value: "primary", label: "Primary" },
+        { value: "secondary", label: "Secondary" },
+        { value: "al", label: "A/L" },
+      ],
+      grades: uniqueGrades,
+      streams: uniqueStreams,
+    });
+  } catch (err) {
+    console.error("getPendingEnrollRequestOptions error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 export const getPendingEnrollRequests = async (req, res) => {
   try {
+    const {
+      level = "",
+      grade = "",
+      stream = "",
+      page = "1",
+      limit = "12",
+    } = req.query || {};
+
+    const pageNumber = Math.max(1, Number(page) || 1);
+    const limitNumber = Math.max(1, Math.min(50, Number(limit) || 12));
+
     const list = await Enrollment.find({ status: "pending" })
       .sort({ createdAt: -1 })
       .lean();
@@ -220,6 +361,8 @@ export const getPendingEnrollRequests = async (req, res) => {
     const enriched = [];
     for (const r of list) {
       const classDetails = await classReadableDetails(r.classId);
+      if (!classDetails) continue;
+
       const stu = await User.findById(r.studentId).select("email").lean();
 
       enriched.push({
@@ -229,17 +372,65 @@ export const getPendingEnrollRequests = async (req, res) => {
       });
     }
 
-    return res.status(200).json({ requests: enriched });
+    let filtered = enriched;
+
+    if (level) {
+      filtered = filtered.filter(
+        (row) =>
+          String(row?.classDetails?.level || "").toLowerCase() ===
+          String(level).trim().toLowerCase()
+      );
+    }
+
+    if (grade) {
+      filtered = filtered.filter(
+        (row) => Number(row?.classDetails?.grade || 0) === Number(grade)
+      );
+    }
+
+    if (stream) {
+      filtered = filtered.filter(
+        (row) =>
+          normalizeKey(row?.classDetails?.stream || "") === normalizeKey(stream)
+      );
+    }
+
+    filtered.sort((a, b) => {
+      const aLevel = String(a?.classDetails?.level || "");
+      const bLevel = String(b?.classDetails?.level || "");
+      if (aLevel !== bLevel) return aLevel.localeCompare(bLevel);
+
+      const aGrade = Number(a?.classDetails?.grade || 0);
+      const bGrade = Number(b?.classDetails?.grade || 0);
+      if (aGrade !== bGrade) return aGrade - bGrade;
+
+      const aStream = String(
+        a?.classDetails?.streamLabel || a?.classDetails?.stream || ""
+      );
+      const bStream = String(
+        b?.classDetails?.streamLabel || b?.classDetails?.stream || ""
+      );
+      if (aStream !== bStream) return aStream.localeCompare(bStream);
+
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    const total = filtered.length;
+    const start = (pageNumber - 1) * limitNumber;
+    const rows = filtered.slice(start, start + limitNumber);
+
+    return res.status(200).json({
+      total,
+      page: pageNumber,
+      limit: limitNumber,
+      requests: rows,
+    });
   } catch (err) {
     console.error("getPendingEnrollRequests error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// =======================================================
-// ADMIN: APPROVE REQUEST
-// PATCH /api/enroll/approve/:enrollId
-// =======================================================
 export const approveEnrollRequest = async (req, res) => {
   try {
     const { enrollId } = req.params;
@@ -270,10 +461,6 @@ export const approveEnrollRequest = async (req, res) => {
   }
 };
 
-// =======================================================
-// ADMIN: REJECT REQUEST
-// PATCH /api/enroll/reject/:enrollId
-// =======================================================
 export const rejectEnrollRequest = async (req, res) => {
   try {
     const { enrollId } = req.params;

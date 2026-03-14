@@ -6,6 +6,7 @@ import {
   requestEnroll,
   getMyEnrollRequests,
   getMyApprovedClasses,
+  getPendingEnrollRequestOptions,
   getPendingEnrollRequests,
   approveEnrollRequest,
   rejectEnrollRequest,
@@ -25,17 +26,26 @@ router.get(
 
 // admin
 router.get(
+  "/pending-options",
+  authenticate,
+  authorize(["admin"]),
+  getPendingEnrollRequestOptions
+);
+
+router.get(
   "/pending",
   authenticate,
   authorize(["admin"]),
   getPendingEnrollRequests
 );
+
 router.patch(
   "/approve/:enrollId",
   authenticate,
   authorize(["admin"]),
   approveEnrollRequest
 );
+
 router.patch(
   "/reject/:enrollId",
   authenticate,

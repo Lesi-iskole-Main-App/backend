@@ -53,7 +53,7 @@ export const getStudents = async (req, res, next) => {
   try {
     const {
       status = "",
-      email = "",
+      phonenumber = "",
       district = "",
       level = "",
       grade = "",
@@ -70,8 +70,11 @@ export const getStudents = async (req, res, next) => {
       role: "student",
     };
 
-    if (email) {
-      userQuery.email = { $regex: String(email).trim(), $options: "i" };
+    if (phonenumber) {
+      userQuery.phonenumber = {
+        $regex: String(phonenumber).trim(),
+        $options: "i",
+      };
     }
 
     if (district) {
@@ -88,7 +91,7 @@ export const getStudents = async (req, res, next) => {
 
     const students = await User.find(userQuery)
       .select(
-        "name email district town address selectedLevel selectedGradeNumber progressUpdatedAt isActive"
+        "name phonenumber district town address selectedLevel selectedGradeNumber progressUpdatedAt isActive"
       )
       .sort({ createdAt: -1 })
       .lean();
@@ -143,12 +146,14 @@ export const getStudents = async (req, res, next) => {
 
     let rows = students.map((student) => {
       const statusKey = getStatusFromProgressDate(student.progressUpdatedAt);
-      const classNames = uniqueValues(classNamesByStudentId.get(toId(student._id)) || []);
+      const classNames = uniqueValues(
+        classNamesByStudentId.get(toId(student._id)) || []
+      );
 
       return {
         _id: toId(student._id),
         name: String(student.name || "").trim(),
-        email: String(student.email || "").trim(),
+        phonenumber: String(student.phonenumber || "").trim(),
         district: String(student.district || "").trim(),
         town: String(student.town || "").trim(),
         address: String(student.address || "").trim(),
@@ -162,11 +167,16 @@ export const getStudents = async (req, res, next) => {
 
     if (status) {
       const wanted = String(status).trim().toLowerCase();
-      rows = rows.filter((row) => String(row.statusKey).toLowerCase() === wanted);
+      rows = rows.filter(
+        (row) => String(row.statusKey).toLowerCase() === wanted
+      );
     }
 
     if (classId) {
-      const targetClass = await ClassModel.findById(classId).select("className").lean();
+      const targetClass = await ClassModel.findById(classId)
+        .select("className")
+        .lean();
+
       const className = String(targetClass?.className || "").trim();
 
       if (!className) {

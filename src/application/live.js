@@ -97,6 +97,15 @@ const mapLiveForResponse = (liveDoc, classDetails = null) => {
   };
 };
 
+const requireApprovedEnrollment = async (studentId, classId) => {
+  return Enrollment.findOne({
+    studentId,
+    classId,
+    status: "approved",
+    isActive: true,
+  }).lean();
+};
+
 // CREATE
 export const createLiveByClassId = async (req, res, next) => {
   try {
@@ -161,6 +170,16 @@ export const getAllLiveByClassId = async (req, res, next) => {
       return res.status(404).json({ message: "Class not found" });
     }
 
+    const role = String(req.user?.role || "").toLowerCase();
+    if (role === "student") {
+      const approved = await requireApprovedEnrollment(req.user?.id, classId);
+      if (!approved) {
+        return res.status(403).json({
+          message: "Only approved enrolled students can view live classes",
+        });
+      }
+    }
+
     const gradeDoc = await Grade.findById(foundClass.gradeId).lean();
 
     const lives = await Live.find({
@@ -201,6 +220,16 @@ export const getLiveByClassIdAndLiveId = async (req, res, next) => {
 
     if (!foundClass) {
       return res.status(404).json({ message: "Class not found" });
+    }
+
+    const role = String(req.user?.role || "").toLowerCase();
+    if (role === "student") {
+      const approved = await requireApprovedEnrollment(req.user?.id, classId);
+      if (!approved) {
+        return res.status(403).json({
+          message: "Only approved enrolled students can view live classes",
+        });
+      }
     }
 
     const gradeDoc = await Grade.findById(foundClass.gradeId).lean();

@@ -43,6 +43,10 @@ const normalizePayment = (v) => {
 const is1to11 = (g) => g >= 1 && g <= 11;
 const is12or13 = (g) => g === 12 || g === 13;
 
+const normalizeStreamText = (v) => {
+  return toStr(v).toLowerCase().replace(/[_\s]+/g, " ").trim();
+};
+
 const readablePaperMeta = (paper, grade) => {
   const gNo = Number(grade?.grade);
   let subject = null;
@@ -104,6 +108,81 @@ export const getPaperFormData = async (req, res) => {
     });
   } catch (err) {
     console.error("getPaperFormData error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/* =========================================================
+   ✅ PUBLIC: SUBJECTS FOR STUDENT APP
+   /api/paper/public/subjects?gradeNumber=12&stream=Biological+Science
+========================================================= */
+export const getPublicPaperSubjects = async (req, res) => {
+  try {
+    const rawGradeNumber = req.query?.gradeNumber;
+    const rawStream = req.query?.stream;
+
+    if (rawGradeNumber === undefined || rawGradeNumber === null || rawGradeNumber === "") {
+      return res.status(400).json({ message: "gradeNumber is required" });
+    }
+
+    const gradeNumber = Number(rawGradeNumber);
+    if (!gradeNumber || gradeNumber < 1 || gradeNumber > 13) {
+      return res.status(400).json({ message: "Valid gradeNumber is required" });
+    }
+
+    // grades 1..11
+    if (is1to11(gradeNumber)) {
+      const gradeDoc = await Grade.findOne({
+        grade: gradeNumber,
+        isActive: true,
+      }).lean();
+
+      if (!gradeDoc) {
+        return res.status(404).json({ message: "Grade not found" });
+      }
+
+      const subjects = (gradeDoc.subjects || []).map((s) => ({
+        _id: String(s._id),
+        subject: s.subject,
+      }));
+
+      return res.status(200).json({ subjects });
+    }
+
+    // grades 12..13 (A/L)
+    const streamName = toStr(rawStream);
+    if (!streamName) {
+      return res.status(400).json({ message: "stream is required for A/L" });
+    }
+
+    const gradeDoc = await Grade.findOne({
+      grade: gradeNumber,
+      isActive: true,
+    }).lean();
+
+    if (!gradeDoc) {
+      return res.status(404).json({ message: "Grade not found" });
+    }
+
+    const stream = (gradeDoc.streams || []).find(
+      (s) => normalizeStreamText(s.stream) === normalizeStreamText(streamName)
+    );
+
+    if (!stream) {
+      return res.status(404).json({ message: "Stream not found for this A/L grade" });
+    }
+
+    const subjects = (stream.subjects || []).map((s) => ({
+      _id: String(s._id),
+      subject: s.subject,
+    }));
+
+    return res.status(200).json({
+      stream: stream.stream,
+      subjects,
+    });
+  } catch (err) {
+    console.error("getPublicPaperSubjects error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -524,7 +603,6 @@ export const getPublishedPapersPublic = async (req, res) => {
         .json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
     }
 
-    // Grades 1..11 - old flow unchanged
     if (hasGradeNumber && gradeNumber >= 1 && gradeNumber <= 11) {
       const gradeDoc = await Grade.findOne({ grade: gradeNumber, isActive: true }).lean();
       if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
@@ -563,7 +641,6 @@ export const getPublishedPapersPublic = async (req, res) => {
       return res.status(200).json({ papers: formatted });
     }
 
-    // A/L - stream + subject across both 12 and 13
     const isALRequest =
       level === "al" ||
       gradeNumber === 12 ||
@@ -595,7 +672,7 @@ export const getPublishedPapersPublic = async (req, res) => {
 
     for (const gradeDoc of alGrades) {
       const st = (gradeDoc.streams || []).find(
-        (x) => toStr(x.stream).toLowerCase() === streamName.toLowerCase()
+        (x) => normalizeStreamText(x.stream) === normalizeStreamText(streamName)
       );
       if (!st) continue;
 

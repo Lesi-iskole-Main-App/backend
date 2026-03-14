@@ -12,7 +12,7 @@ const attemptAnswerSchema = new Schema(
     // ✅ MULTI selection (new)
     selectedAnswerIndexes: { type: [Number], required: true, default: [] },
 
-    // ✅ keep old single selection for backward compatibility
+    // ✅ keep old single selection for backward compatibility 
     selectedAnswerIndex: { type: Number, default: null },
 
     // calculated on submit

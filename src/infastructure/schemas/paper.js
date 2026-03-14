@@ -18,7 +18,6 @@ const paperSchema = new Schema(
     timeMinutes: { type: Number, required: true, min: 1, max: 180 },
     questionCount: { type: Number, required: true, min: 1, max: 50 },
 
-    // ✅ IMPORTANT: keep as DEFAULT for UI, not strict rule for question answers
     oneQuestionAnswersCount: { type: Number, default: 4, min: 1, max: 6 },
 
     createdPersonName: { type: String, required: true, trim: true },
@@ -27,7 +26,6 @@ const paperSchema = new Schema(
     amount: { type: Number, default: 0, min: 0 },
     attempts: { type: Number, default: 1, enum: ATTEMPTS_ALLOWED },
 
-    // ✅ publish fields
     isPublished: { type: Boolean, default: false, index: true },
     publishedAt: { type: Date, default: null },
 

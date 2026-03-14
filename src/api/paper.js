@@ -9,12 +9,14 @@ import {
   deletePaperById,
   publishPaperById,
   getPublishedPapersPublic,
+  getPublicPaperSubjects,
 } from "../application/paper.js";
 
 const router = express.Router();
 
 // ✅ PUBLIC (Student App)
 router.get("/public", getPublishedPapersPublic);
+router.get("/public/subjects", getPublicPaperSubjects);
 
 // ✅ ADMIN
 router.get("/form-data", authenticate, authorize(["admin"]), getPaperFormData);

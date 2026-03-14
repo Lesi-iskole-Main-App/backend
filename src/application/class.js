@@ -6,6 +6,30 @@ import User from "../infastructure/schemas/user.js";
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 const norm = (v) => String(v || "").trim();
 
+const normalizeKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
+
+const matchALStream = (streamValue, input) => {
+  const a = normalizeKey(streamValue);
+  const b = normalizeKey(input);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const label = normalizeKey(AL_STREAM_LABELS[a] || "");
+  return label === b;
+};
+
 const validateTeachers = async (teacherIds) => {
   if (!Array.isArray(teacherIds)) {
     return { ok: false, code: 400, message: "teacherIds must be an array" };
@@ -437,7 +461,11 @@ export const getClassesPublic = async (req, res) => {
     let gradeDoc = null;
     let query = { isActive: true };
 
-    if (gradeNumber === "12" || gradeNumber === "13" || gradeNumber.toLowerCase() === "al") {
+    if (
+      gradeNumber === "12" ||
+      gradeNumber === "13" ||
+      gradeNumber.toLowerCase() === "al"
+    ) {
       gradeDoc = await Grade.findOne({
         flowType: "al",
         isActive: true,
@@ -455,10 +483,8 @@ export const getClassesPublic = async (req, res) => {
       let streamObj = null;
 
       if (streamName) {
-        streamObj = (gradeDoc.streams || []).find(
-          (s) =>
-            String(s?.stream || "").trim().toLowerCase() ===
-            streamName.toLowerCase()
+        streamObj = (gradeDoc.streams || []).find((s) =>
+          matchALStream(s?.stream, streamName)
         );
 
         if (!streamObj) {
