@@ -1,9 +1,12 @@
 import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import User from "../infastructure/schemas/user.js";
+import Grade from "../infastructure/schemas/grade.js";
 
 const normalizePhone = (value = "") => String(value || "").trim();
 const normalizeText = (value = "") => String(value || "").trim();
+const normalizeKey = (value = "") =>
+  String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
 
 const sanitizeUser = (userDoc) => {
   if (!userDoc) return null;
@@ -61,7 +64,9 @@ export const getMyProfile = async (req, res, next) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    return res.status(200).json(user);
+    return res.status(200).json({
+      user,
+    });
   } catch (err) {
     next(err);
   }
@@ -316,7 +321,7 @@ export const rejectTeacher = async (req, res, next) => {
 export const saveStudentGradeSelection = async (req, res, next) => {
   try {
     const userId = req.user?.id;
-    const { level, grade, gradeNumber, stream } = req.body || {};
+    const { grade, gradeNumber, stream } = req.body || {};
 
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -340,9 +345,7 @@ export const saveStudentGradeSelection = async (req, res, next) => {
         .json({ message: "Grade selection already locked" });
     }
 
-    const cleanLevel = normalizeText(level).toLowerCase();
     const cleanGrade = normalizeText(grade);
-    const cleanStream = normalizeText(stream || "");
 
     let finalGradeNumber = Number(gradeNumber);
 
@@ -353,15 +356,49 @@ export const saveStudentGradeSelection = async (req, res, next) => {
         : Number(cleanGrade);
     }
 
-    if (!cleanLevel || !Number.isFinite(finalGradeNumber)) {
-      return res
-        .status(400)
-        .json({ message: "level and valid grade are required" });
+    if (!Number.isInteger(finalGradeNumber) || finalGradeNumber < 1 || finalGradeNumber > 13) {
+      return res.status(400).json({ message: "Valid grade is required" });
     }
 
-    user.selectedLevel = cleanLevel;
+    const gradeDoc = await Grade.findOne({
+      grade: finalGradeNumber,
+      isActive: true,
+    }).lean();
+
+    if (!gradeDoc) {
+      return res.status(400).json({ message: "Selected grade not found" });
+    }
+
     user.selectedGradeNumber = finalGradeNumber;
-    user.selectedStream = cleanStream || null;
+    user.selectedLevel =
+      gradeDoc.flowType === "al"
+        ? "al"
+        : finalGradeNumber <= 5
+        ? "primary"
+        : "secondary";
+
+    if (gradeDoc.flowType === "al") {
+      const cleanStream = normalizeKey(stream);
+
+      if (!cleanStream) {
+        return res.status(400).json({ message: "Stream is required for A/L" });
+      }
+
+      const streamExists = Array.isArray(gradeDoc.streams)
+        ? gradeDoc.streams.some(
+            (st) => normalizeKey(st?.stream) === cleanStream
+          )
+        : false;
+
+      if (!streamExists) {
+        return res.status(400).json({ message: "Invalid stream for selected grade" });
+      }
+
+      user.selectedStream = cleanStream;
+    } else {
+      user.selectedStream = null;
+    }
+
     user.gradeSelectionLocked = true;
     user.gradeSelectedAt = new Date();
 

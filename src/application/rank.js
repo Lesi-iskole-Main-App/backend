@@ -1,11 +1,13 @@
-// src/application/rank.js
 import mongoose from "mongoose";
 import PaperAttempt from "../infastructure/schemas/paperAttempt.js";
+import User from "../infastructure/schemas/user.js";
 
 const toInt = (v, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 };
+
+const normalize = (v) => String(v || "").trim().toLowerCase();
 
 export const getIslandRank = async (req, res) => {
   try {
@@ -15,13 +17,51 @@ export const getIslandRank = async (req, res) => {
     const limit = Math.min(Math.max(toInt(req.query?.limit, 50), 1), 200);
     const uid = new mongoose.Types.ObjectId(String(userId));
 
+    const currentUser = await User.findById(userId)
+      .select("selectedLevel selectedGradeNumber selectedStream role isActive")
+      .lean();
+
+    if (!currentUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const selectedGradeNumber = Number(currentUser?.selectedGradeNumber || 0) || null;
+    const selectedLevel = String(currentUser?.selectedLevel || "").trim().toLowerCase();
+    const selectedStream = String(currentUser?.selectedStream || "").trim();
+    const normalizedStream = normalize(selectedStream);
+
+    if (!selectedGradeNumber) {
+      return res.status(200).json({
+        top: [],
+        me: {
+          studentId: String(userId),
+          name: currentUser?.name || "",
+          totalCoins: 0,
+          totalFinishedExams: 0,
+          rank: 0,
+        },
+      });
+    }
+
+    const isAL = selectedGradeNumber === 12 || selectedGradeNumber === 13 || selectedLevel === "al";
+
+    const userScopeMatch = {
+      "user.role": "student",
+      "user.isActive": true,
+      "user.selectedGradeNumber": selectedGradeNumber,
+    };
+
+    if (isAL) {
+      userScopeMatch["user.selectedStreamNormalized"] = normalizedStream;
+    }
+
     const pipeline = [
       // ✅ only completed attempts + only free/paid
       {
         $match: {
           status: "submitted",
           submittedAt: { $ne: null },
-          paymentType: { $in: ["free", "paid"] }, // ✅ exclude practise
+          paymentType: { $in: ["free", "paid"] },
         },
       },
 
@@ -53,6 +93,34 @@ export const getIslandRank = async (req, res) => {
         },
       },
 
+      // ✅ attach user first, then scope to grade / stream
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "_id",
+          as: "user",
+        },
+      },
+      { $unwind: { path: "$user", preserveNullAndEmptyArrays: false } },
+
+      {
+        $addFields: {
+          "user.selectedStreamNormalized": {
+            $toLower: {
+              $trim: {
+                input: { $ifNull: ["$user.selectedStream", ""] },
+              },
+            },
+          },
+        },
+      },
+
+      // ✅ grade-wise, and A/L stream-wise
+      {
+        $match: userScopeMatch,
+      },
+
       // ✅ single numeric score to allow denseRank sortBy with one field
       {
         $addFields: {
@@ -63,8 +131,8 @@ export const getIslandRank = async (req, res) => {
         $addFields: {
           score: {
             $add: [
-              { $multiply: ["$totalCoins", 1000000000000000] }, // 1e15
-              { $multiply: ["$totalFinishedExams", 1000000000000] }, // 1e12
+              { $multiply: ["$totalCoins", 1000000000000000] },
+              { $multiply: ["$totalFinishedExams", 1000000000000] },
               "$lastTime",
             ],
           },
@@ -82,22 +150,11 @@ export const getIslandRank = async (req, res) => {
         },
       },
 
-      // attach user
-      {
-        $lookup: {
-          from: "users",
-          localField: "_id",
-          foreignField: "_id",
-          as: "user",
-        },
-      },
-      { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
-
       {
         $project: {
           studentId: { $toString: "$_id" },
           name: { $ifNull: ["$user.name", "Student"] },
-          totalCoins: 1, // ✅ points
+          totalCoins: 1,
           totalFinishedExams: 1,
           rank: 1,
         },
@@ -106,7 +163,7 @@ export const getIslandRank = async (req, res) => {
       {
         $facet: {
           top: [{ $limit: limit }],
-          me: [{ $match: { _id: uid } }, { $limit: 1 }],
+          me: [{ $match: { studentId: String(userId) } }, { $limit: 1 }],
         },
       },
     ];
@@ -116,7 +173,7 @@ export const getIslandRank = async (req, res) => {
     const top = out?.[0]?.top || [];
     const me = (out?.[0]?.me || [])[0] || {
       studentId: String(userId),
-      name: "",
+      name: currentUser?.name || "",
       totalCoins: 0,
       totalFinishedExams: 0,
       rank: 0,

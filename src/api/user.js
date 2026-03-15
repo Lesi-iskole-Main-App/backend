@@ -10,6 +10,7 @@ import {
   saveStudentGradeSelection,
   getMyProfile,
 } from "../application/user.js";
+import { updateMyProfile } from "../application/userProfile.js";
 
 import { authenticate } from "../api/middlewares/authentication.js";
 import { authorize } from "../api/middlewares/authrization.js";
@@ -20,6 +21,7 @@ const router = express.Router();
    AUTHENTICATED USER
 ========================= */
 router.get("/me", authenticate, getMyProfile);
+router.patch("/me/profile", authenticate, updateMyProfile);
 
 /* =========================
    STUDENT: SAVE GRADE ONCE
