@@ -10,15 +10,13 @@ const router = express.Router();
  * admin only
  * query:
  * - paperType
- * - subject
  * - grade
+ * - stream
+ * - subject
  * - completedPaperCount
+ * - page
+ * - limit
  */
-router.get(
-  "/",
-  authenticate,
-  authorize(["admin"]),
-  getAdminResultReport
-);
+router.get("/", authenticate, authorize(["admin"]), getAdminResultReport);
 
 export default router;

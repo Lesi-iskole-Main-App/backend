@@ -57,7 +57,10 @@ const formatStreamLabel = (value) => {
     ["common", "Common"],
   ]);
 
-  return map.get(normalized) || normalized.replace(/\b\w/g, (m) => m.toUpperCase());
+  return (
+    map.get(normalized) ||
+    normalized.replace(/\b\w/g, (m) => m.toUpperCase())
+  );
 };
 
 const getGradeMode = (gradeDoc) => {
@@ -79,7 +82,10 @@ const getGradeNumberSafe = (gradeDoc) => {
 };
 
 const findNormalSubjectById = (grade, subjectId) => {
-  return (grade?.subjects || []).find((s) => String(s._id) === String(subjectId)) || null;
+  return (
+    (grade?.subjects || []).find((s) => String(s._id) === String(subjectId)) ||
+    null
+  );
 };
 
 const findNormalSubjectByName = (grade, subjectName) => {
@@ -94,7 +100,10 @@ const findNormalSubjectByName = (grade, subjectName) => {
 };
 
 const findALStreamById = (grade, streamId) => {
-  return (grade?.streams || []).find((s) => String(s._id) === String(streamId)) || null;
+  return (
+    (grade?.streams || []).find((s) => String(s._id) === String(streamId)) ||
+    null
+  );
 };
 
 const findALStreamByName = (grade, streamName) => {
@@ -109,7 +118,10 @@ const findALStreamByName = (grade, streamName) => {
 };
 
 const findALSubjectById = (stream, subjectId) => {
-  return (stream?.subjects || []).find((s) => String(s._id) === String(subjectId)) || null;
+  return (
+    (stream?.subjects || []).find((s) => String(s._id) === String(subjectId)) ||
+    null
+  );
 };
 
 const findALSubjectByName = (stream, subjectName) => {
@@ -161,7 +173,8 @@ const readablePaperMeta = (paper, grade) => {
   }
 
   return {
-    grade: gradeNo,
+    grade: mode === "al" ? 12 : gradeNo,
+    gradeLabel: mode === "al" ? "A/L" : `Grade ${gradeNo}`,
     stream,
     subject,
   };
@@ -265,7 +278,7 @@ const resolvePaperSelection = (grade, payload = {}, existing = null) => {
     if (!streamDoc) {
       return {
         ok: false,
-        message: "streamId is required for grade 12-13",
+        message: "streamId is required for A/L",
       };
     }
 
@@ -282,7 +295,7 @@ const resolvePaperSelection = (grade, payload = {}, existing = null) => {
     if (!subjectDoc) {
       return {
         ok: false,
-        message: "streamSubjectId is required for grade 12-13",
+        message: "streamSubjectId is required for A/L",
       };
     }
 
@@ -298,8 +311,7 @@ const resolvePaperSelection = (grade, payload = {}, existing = null) => {
 
   return {
     ok: false,
-    message:
-      "Invalid grade number. This grade record has invalid grade/flowType data in database.",
+    message: "Invalid grade flow",
   };
 };
 
@@ -327,7 +339,10 @@ const getPublishedNormalSubjects = async ({ gradeDoc, paperType }) => {
     .sort((a, b) => a.subject.localeCompare(b.subject));
 };
 
-const getPublishedALSubjectsAcrossAllGrades = async ({ streamName, paperType }) => {
+const getPublishedALSubjectsAcrossAllGrades = async ({
+  streamName,
+  paperType,
+}) => {
   const alGrades = await Grade.find({
     flowType: "al",
     isActive: true,
@@ -368,7 +383,12 @@ const getPublishedALSubjectsAcrossAllGrades = async ({ streamName, paperType }) 
     .lean();
 
   const availableKeys = new Set(
-    papers.map((p) => `${String(p.gradeId)}:${String(p.streamId)}:${String(p.streamSubjectId)}`)
+    papers.map(
+      (p) =>
+        `${String(p.gradeId)}:${String(p.streamId)}:${String(
+          p.streamSubjectId
+        )}`
+    )
   );
 
   const subjectMap = new Map();
@@ -405,9 +425,37 @@ const getPublishedALSubjectsAcrossAllGrades = async ({ streamName, paperType }) 
 ========================================================= */
 export const getPaperFormData = async (req, res) => {
   try {
-    const grades = await Grade.find({ isActive: true })
-      .sort({ grade: 1, createdAt: 1 })
+    const gradeDocs = await Grade.find({ isActive: true })
+      .sort({ flowType: 1, grade: 1, createdAt: 1 })
       .lean();
+
+    const grades = [];
+    let alAdded = false;
+
+    for (const g of gradeDocs) {
+      const mode = getGradeMode(g);
+
+      if (mode === "al") {
+        if (alAdded) continue;
+        alAdded = true;
+
+        grades.push({
+          ...g,
+          grade: 12,
+          title: "A/L",
+          subjects: [],
+          streams: Array.isArray(g.streams) ? g.streams : [],
+        });
+        continue;
+      }
+
+      grades.push({
+        ...g,
+        title: toStr(g.title) || `Grade ${g.grade}`,
+        subjects: Array.isArray(g.subjects) ? g.subjects : [],
+        streams: [],
+      });
+    }
 
     return res.status(200).json({
       enums: {
@@ -429,7 +477,6 @@ export const getPaperFormData = async (req, res) => {
 
 /* =========================================================
    PUBLIC: SUBJECTS FOR STUDENT APP
-   only subjects that already have published papers
 ========================================================= */
 export const getPublicPaperSubjects = async (req, res) => {
   try {
@@ -443,7 +490,11 @@ export const getPublicPaperSubjects = async (req, res) => {
         .json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
     }
 
-    if (rawGradeNumber === undefined || rawGradeNumber === null || rawGradeNumber === "") {
+    if (
+      rawGradeNumber === undefined ||
+      rawGradeNumber === null ||
+      rawGradeNumber === ""
+    ) {
       return res.status(400).json({ message: "gradeNumber is required" });
     }
 
@@ -452,7 +503,6 @@ export const getPublicPaperSubjects = async (req, res) => {
       return res.status(400).json({ message: "Valid gradeNumber is required" });
     }
 
-    // grades 1..11
     if (gradeNumber >= 1 && gradeNumber <= 11) {
       const gradeDoc = await findGradeByNumber(gradeNumber);
 
@@ -468,7 +518,6 @@ export const getPublicPaperSubjects = async (req, res) => {
       return res.status(200).json({ subjects });
     }
 
-    // A/L => stream only, not grade specific
     const streamName = toStr(rawStream);
     if (!streamName) {
       return res.status(400).json({ message: "stream is required for A/L" });
@@ -534,7 +583,9 @@ export const createPaper = async (req, res) => {
 
     const oq = Number(oneQuestionAnswersCount);
     if (!oq || oq < 1 || oq > 6) {
-      return res.status(400).json({ message: "oneQuestionAnswersCount must be 1..6" });
+      return res
+        .status(400)
+        .json({ message: "oneQuestionAnswersCount must be 1..6" });
     }
 
     const creator = toStr(createdPersonName);
@@ -563,7 +614,9 @@ export const createPaper = async (req, res) => {
     if (pay === "paid") {
       const a = Number(amount);
       if (!a || a <= 0) {
-        return res.status(400).json({ message: "amount must be > 0 for paid papers" });
+        return res
+          .status(400)
+          .json({ message: "amount must be > 0 for paid papers" });
       }
       finalAmount = a;
     }
@@ -615,7 +668,9 @@ export const getAllPapers = async (req, res) => {
   try {
     const list = await Paper.find().sort({ createdAt: -1 }).lean();
 
-    const gradeIds = [...new Set(list.map((p) => String(p.gradeId)).filter(Boolean))];
+    const gradeIds = [
+      ...new Set(list.map((p) => String(p.gradeId)).filter(Boolean)),
+    ];
     const grades = await Grade.find({ _id: { $in: gradeIds } }).lean();
     const gradeMap = new Map(grades.map((g) => [String(g._id), g]));
 
@@ -642,16 +697,20 @@ export const getAllPapers = async (req, res) => {
 export const updatePaperById = async (req, res) => {
   try {
     const { paperId } = req.params;
-    if (!isValidId(paperId)) return res.status(400).json({ message: "Invalid paperId" });
+    if (!isValidId(paperId))
+      return res.status(400).json({ message: "Invalid paperId" });
 
     const existing = await Paper.findById(paperId).lean();
     if (!existing) return res.status(404).json({ message: "Paper not found" });
 
     if (existing.isPublished) {
-      return res.status(400).json({ message: "Published paper cannot be edited" });
+      return res
+        .status(400)
+        .json({ message: "Published paper cannot be edited" });
     }
 
-    const nextGradeId = req.body.gradeId !== undefined ? req.body.gradeId : existing.gradeId;
+    const nextGradeId =
+      req.body.gradeId !== undefined ? req.body.gradeId : existing.gradeId;
     if (!isValidId(nextGradeId)) {
       return res.status(400).json({ message: "Valid gradeId is required" });
     }
@@ -678,7 +737,8 @@ export const updatePaperById = async (req, res) => {
 
     if (req.body.createdPersonName !== undefined) {
       const v = toStr(req.body.createdPersonName);
-      if (!v) return res.status(400).json({ message: "createdPersonName is required" });
+      if (!v)
+        return res.status(400).json({ message: "createdPersonName is required" });
       patch.createdPersonName = v;
     }
 
@@ -711,7 +771,9 @@ export const updatePaperById = async (req, res) => {
     if (req.body.oneQuestionAnswersCount !== undefined) {
       const oq = Number(req.body.oneQuestionAnswersCount);
       if (!oq || oq < 1 || oq > 6) {
-        return res.status(400).json({ message: "oneQuestionAnswersCount must be 1..6" });
+        return res
+          .status(400)
+          .json({ message: "oneQuestionAnswersCount must be 1..6" });
       }
       patch.oneQuestionAnswersCount = oq;
     }
@@ -737,21 +799,27 @@ export const updatePaperById = async (req, res) => {
       if (pay === "paid") {
         const a = Number(req.body.amount);
         if (!a || a <= 0) {
-          return res.status(400).json({ message: "amount must be > 0 for paid papers" });
+          return res
+            .status(400)
+            .json({ message: "amount must be > 0 for paid papers" });
         }
         patch.amount = a;
       } else {
         patch.amount = 0;
       }
     } else if (req.body.amount !== undefined) {
-      return res.status(400).json({ message: "Provide payment together with amount" });
+      return res
+        .status(400)
+        .json({ message: "Provide payment together with amount" });
     }
 
     if (req.body.isActive !== undefined) {
       patch.isActive = Boolean(req.body.isActive);
     }
 
-    const updated = await Paper.findByIdAndUpdate(paperId, patch, { new: true }).lean();
+    const updated = await Paper.findByIdAndUpdate(paperId, patch, {
+      new: true,
+    }).lean();
 
     const g = await Grade.findById(updated.gradeId).lean();
     const meta = g ? readablePaperMeta(updated, g) : null;
@@ -774,7 +842,8 @@ export const updatePaperById = async (req, res) => {
 export const deletePaperById = async (req, res) => {
   try {
     const { paperId } = req.params;
-    if (!isValidId(paperId)) return res.status(400).json({ message: "Invalid paperId" });
+    if (!isValidId(paperId))
+      return res.status(400).json({ message: "Invalid paperId" });
 
     const deleted = await Paper.findByIdAndDelete(paperId);
     if (!deleted) return res.status(404).json({ message: "Paper not found" });
@@ -792,7 +861,8 @@ export const deletePaperById = async (req, res) => {
 export const publishPaperById = async (req, res) => {
   try {
     const { paperId } = req.params;
-    if (!isValidId(paperId)) return res.status(400).json({ message: "Invalid paperId" });
+    if (!isValidId(paperId))
+      return res.status(400).json({ message: "Invalid paperId" });
 
     const paper = await Paper.findById(paperId).lean();
     if (!paper) return res.status(404).json({ message: "Paper not found" });
@@ -803,7 +873,9 @@ export const publishPaperById = async (req, res) => {
 
     const progress = await getProgressForPaper(paper);
     if (!progress.isComplete) {
-      return res.status(400).json({ message: "Only complete papers can be published" });
+      return res
+        .status(400)
+        .json({ message: "Only complete papers can be published" });
     }
 
     const updated = await Paper.findByIdAndUpdate(
@@ -851,7 +923,6 @@ export const getPublishedPapersPublic = async (req, res) => {
         .json({ message: `paperType must be one of: ${PAPER_TYPES.join(", ")}` });
     }
 
-    // normal grades 1..11
     if (hasGradeNumber && gradeNumber >= 1 && gradeNumber <= 11) {
       const gradeDoc = await findGradeByNumber(gradeNumber);
       if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
@@ -861,7 +932,10 @@ export const getPublishedPapersPublic = async (req, res) => {
       }
 
       const sub = findNormalSubjectByName(gradeDoc, subjectName);
-      if (!sub) return res.status(404).json({ message: "Subject not found for this grade" });
+      if (!sub)
+        return res
+          .status(404)
+          .json({ message: "Subject not found for this grade" });
 
       const papers = await Paper.find({
         gradeId: String(gradeDoc._id),
@@ -888,7 +962,6 @@ export const getPublishedPapersPublic = async (req, res) => {
       return res.status(200).json({ papers: formatted });
     }
 
-    // A/L => by stream + subject, across all A/L grades
     const isALRequest =
       level === "al" ||
       gradeNumber === 12 ||

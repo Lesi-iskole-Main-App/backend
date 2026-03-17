@@ -12,6 +12,9 @@ const normalizeKey = (value) =>
     .toLowerCase()
     .replace(/\s+/g, "_");
 
+const escapeRegex = (value = "") =>
+  String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const normalizeSLPhone = (phone) => {
   const p = String(phone || "").trim();
 
@@ -151,32 +154,57 @@ export const requestEnroll = async (req, res) => {
       });
     }
 
-    let doc;
-    try {
-      doc = await Enrollment.create({
-        studentId: student._id,
-        classId,
-        studentName: snapName,
-        studentPhone: snapPhone,
-        status: "pending",
-      });
-    } catch (err) {
-      if (err.code === 11000) {
-        const exist = await Enrollment.findOne({
-          studentId: student._id,
-          classId,
-        }).lean();
+    const existing = await Enrollment.findOne({
+      studentId: student._id,
+      classId,
+    });
 
-        const classDetails = await classReadableDetails(classId);
+    if (existing) {
+      const classDetails = await classReadableDetails(classId);
 
+      if (existing.status === "pending") {
         return res.status(200).json({
-          message: "Request already exists",
-          request: exist,
+          message: "Request already pending",
+          request: existing,
           classDetails,
         });
       }
-      throw err;
+
+      if (existing.status === "approved" && existing.isActive === true) {
+        return res.status(200).json({
+          message: "Already approved for this class",
+          request: existing,
+          classDetails,
+        });
+      }
+
+      existing.studentName = snapName;
+      existing.studentPhone = snapPhone;
+      existing.status = "pending";
+      existing.requestedAt = new Date();
+      existing.approvedAt = null;
+      existing.approvedBy = null;
+      existing.isActive = true;
+      await existing.save();
+
+      return res.status(200).json({
+        message: "Enrollment request sent again",
+        request: existing,
+        classDetails,
+      });
     }
+
+    const doc = await Enrollment.create({
+      studentId: student._id,
+      classId,
+      studentName: snapName,
+      studentPhone: snapPhone,
+      status: "pending",
+      requestedAt: new Date(),
+      approvedAt: null,
+      approvedBy: null,
+      isActive: true,
+    });
 
     const classDetails = await classReadableDetails(classId);
 
@@ -264,8 +292,11 @@ export const getMyApprovedClasses = async (req, res) => {
 
 export const getPendingEnrollRequestOptions = async (req, res) => {
   try {
-    const pendingRows = await Enrollment.find({ status: "pending" })
-      .select("classId")
+    const pendingRows = await Enrollment.find({
+      status: "pending",
+      isActive: true,
+    })
+      .select("classId studentPhone")
       .lean();
 
     const classIds = [
@@ -281,11 +312,15 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
         ],
         grades: [],
         streams: [],
+        batchNumbers: [],
       });
     }
 
-    const classDocs = await ClassModel.find({ _id: { $in: classIds }, isActive: true })
-      .select("_id gradeId streamId")
+    const classDocs = await ClassModel.find({
+      _id: { $in: classIds },
+      isActive: true,
+    })
+      .select("_id gradeId streamId batchNumber")
       .lean();
 
     const gradeIds = [
@@ -300,10 +335,15 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
 
     const grades = [];
     const streams = [];
+    const batchNumbers = [];
 
     for (const cls of classDocs) {
       const gradeDoc = gradeMap.get(String(cls.gradeId));
       if (!gradeDoc) continue;
+
+      if (cls.batchNumber) {
+        batchNumbers.push(String(cls.batchNumber).trim());
+      }
 
       if (gradeDoc.flowType === "normal") {
         const level = getLevelFromGradeDoc(gradeDoc);
@@ -342,6 +382,10 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
       return true;
     });
 
+    const uniqueBatchNumbers = [...new Set(batchNumbers.filter(Boolean))].sort(
+      (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true })
+    );
+
     uniqueGrades.sort((a, b) => Number(a.value) - Number(b.value));
     uniqueStreams.sort((a, b) => String(a.label).localeCompare(String(b.label)));
 
@@ -353,6 +397,10 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
       ],
       grades: uniqueGrades,
       streams: uniqueStreams,
+      batchNumbers: uniqueBatchNumbers.map((b) => ({
+        value: b,
+        label: `Batch ${b}`,
+      })),
     });
   } catch (err) {
     console.error("getPendingEnrollRequestOptions error:", err);
@@ -366,6 +414,8 @@ export const getPendingEnrollRequests = async (req, res) => {
       level = "",
       grade = "",
       stream = "",
+      phonenumber = "",
+      batchNumber = "",
       page = "1",
       limit = "12",
     } = req.query || {};
@@ -373,7 +423,19 @@ export const getPendingEnrollRequests = async (req, res) => {
     const pageNumber = Math.max(1, Number(page) || 1);
     const limitNumber = Math.max(1, Math.min(50, Number(limit) || 12));
 
-    const list = await Enrollment.find({ status: "pending" })
+    const enrollmentQuery = {
+      status: "pending",
+      isActive: true,
+    };
+
+    if (phonenumber) {
+      enrollmentQuery.studentPhone = {
+        $regex: escapeRegex(String(phonenumber).trim()),
+        $options: "i",
+      };
+    }
+
+    const list = await Enrollment.find(enrollmentQuery)
       .sort({ createdAt: -1 })
       .lean();
 
@@ -384,6 +446,8 @@ export const getPendingEnrollRequests = async (req, res) => {
 
       enriched.push({
         ...r,
+        studentName: String(r.studentName || "").trim(),
+        studentPhone: String(r.studentPhone || "").trim(),
         classDetails,
       });
     }
@@ -408,6 +472,14 @@ export const getPendingEnrollRequests = async (req, res) => {
       filtered = filtered.filter(
         (row) =>
           normalizeKey(row?.classDetails?.stream || "") === normalizeKey(stream)
+      );
+    }
+
+    if (batchNumber) {
+      filtered = filtered.filter(
+        (row) =>
+          String(row?.classDetails?.batchNumber || "").trim() ===
+          String(batchNumber).trim()
       );
     }
 
@@ -461,6 +533,7 @@ export const approveEnrollRequest = async (req, res) => {
     doc.status = "approved";
     doc.approvedAt = new Date();
     doc.approvedBy = req.user?.id || null;
+    doc.isActive = true;
 
     await doc.save();
 
@@ -491,6 +564,7 @@ export const rejectEnrollRequest = async (req, res) => {
     doc.status = "rejected";
     doc.approvedAt = null;
     doc.approvedBy = req.user?.id || null;
+    doc.isActive = false;
 
     await doc.save();
 

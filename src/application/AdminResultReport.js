@@ -5,6 +5,8 @@ import Paper from "../infastructure/schemas/paper.js";
 import PaperAttempt from "../infastructure/schemas/paperAttempt.js";
 
 const DEFAULT_PAPER_TYPE = "Daily Quiz";
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 20;
 
 const toId = (value) => String(value || "").trim();
 
@@ -23,21 +25,57 @@ const formatPercentage = (value) => {
   return `${num}%`;
 };
 
-const getSubjectNameFromGrade = (gradeDoc, subjectId) => {
-  if (!gradeDoc || !subjectId) return "";
+const normalizeText = (value) => String(value || "").trim().toLowerCase();
 
-  const normalSubjects = Array.isArray(gradeDoc.subjects) ? gradeDoc.subjects : [];
-  const normalFound = normalSubjects.find((s) => toId(s?._id) === toId(subjectId));
-  if (normalFound?.subject) return String(normalFound.subject).trim();
-
-  const streams = Array.isArray(gradeDoc.streams) ? gradeDoc.streams : [];
-  for (const stream of streams) {
-    const streamSubjects = Array.isArray(stream?.subjects) ? stream.subjects : [];
-    const found = streamSubjects.find((s) => toId(s?._id) === toId(subjectId));
-    if (found?.subject) return String(found.subject).trim();
+const getSubjectAndStreamFromGrade = (gradeDoc, paper) => {
+  if (!gradeDoc) {
+    return { subject: "", stream: "" };
   }
 
-  return "";
+  const normalSubjects = Array.isArray(gradeDoc.subjects) ? gradeDoc.subjects : [];
+  const streams = Array.isArray(gradeDoc.streams) ? gradeDoc.streams : [];
+
+  if (paper?.subjectId) {
+    const normalFound = normalSubjects.find(
+      (s) => toId(s?._id) === toId(paper.subjectId)
+    );
+    if (normalFound?.subject) {
+      return {
+        subject: String(normalFound.subject || "").trim(),
+        stream: "",
+      };
+    }
+  }
+
+  if (paper?.streamSubjectId || paper?.streamId) {
+    for (const streamItem of streams) {
+      const streamName = String(streamItem?.stream || "").trim();
+      const streamSubjects = Array.isArray(streamItem?.subjects)
+        ? streamItem.subjects
+        : [];
+
+      if (paper?.streamSubjectId) {
+        const found = streamSubjects.find(
+          (s) => toId(s?._id) === toId(paper.streamSubjectId)
+        );
+        if (found?.subject) {
+          return {
+            subject: String(found.subject || "").trim(),
+            stream: streamName,
+          };
+        }
+      }
+
+      if (paper?.streamId && toId(streamItem?._id) === toId(paper.streamId)) {
+        return {
+          subject: "",
+          stream: streamName,
+        };
+      }
+    }
+  }
+
+  return { subject: "", stream: "" };
 };
 
 const isBetterAttempt = (nextAttempt, currentBest) => {
@@ -55,7 +93,9 @@ const isBetterAttempt = (nextAttempt, currentBest) => {
   if (nextMarks > currentMarks) return true;
   if (nextMarks < currentMarks) return false;
 
-  const nextSubmitted = new Date(nextAttempt?.submittedAt || nextAttempt?.updatedAt || 0).getTime();
+  const nextSubmitted = new Date(
+    nextAttempt?.submittedAt || nextAttempt?.updatedAt || 0
+  ).getTime();
   const currentSubmitted = new Date(
     currentBest?.submittedAt || currentBest?.updatedAt || 0
   ).getTime();
@@ -63,16 +103,6 @@ const isBetterAttempt = (nextAttempt, currentBest) => {
   return nextSubmitted > currentSubmitted;
 };
 
-/**
- * ✅ SAME Island Rank formula from src/application/rank.js
- * returns Map(studentIdString -> rankNumber)
- *
- * - submitted only
- * - paymentType only free/paid (exclude practise)
- * - best attempt per (studentId+paperId)
- * - sum totalCoins + totalFinishedExams + lastSubmittedAt
- * - score and $denseRank
- */
 const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
   const ids = (studentIdStrings || [])
     .map((x) => String(x || "").trim())
@@ -97,10 +127,9 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
       $match: {
         status: "submitted",
         submittedAt: { $ne: null },
-        paymentType: { $in: ["free", "paid"] }, // ✅ exclude practise
+        paymentType: { $in: ["free", "paid"] },
       },
     },
-
     {
       $sort: {
         studentId: 1,
@@ -117,7 +146,6 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
       },
     },
     { $replaceRoot: { newRoot: "$bestAttempt" } },
-
     {
       $group: {
         _id: "$studentId",
@@ -126,7 +154,6 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
         lastSubmittedAt: { $max: "$submittedAt" },
       },
     },
-
     {
       $addFields: {
         lastTime: { $toLong: { $ifNull: ["$lastSubmittedAt", new Date(0)] } },
@@ -136,16 +163,14 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
       $addFields: {
         score: {
           $add: [
-            { $multiply: ["$totalCoins", 1000000000000000] }, // 1e15
-            { $multiply: ["$totalFinishedExams", 1000000000000] }, // 1e12
+            { $multiply: ["$totalCoins", 1000000000000000] },
+            { $multiply: ["$totalFinishedExams", 1000000000000] },
             "$lastTime",
           ],
         },
       },
     },
-
     { $sort: { score: -1 } },
-
     {
       $setWindowFields: {
         sortBy: { score: -1 },
@@ -154,10 +179,7 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
         },
       },
     },
-
-    // ✅ keep ranks global then filter to current students list
     { $match: { _id: { $in: objectIds } } },
-
     {
       $project: {
         studentId: { $toString: "$_id" },
@@ -174,6 +196,7 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
     const r = Number(row?.rank || 0);
     if (sid) map.set(sid, r || 0);
   }
+
   return map;
 };
 
@@ -181,13 +204,21 @@ export const getAdminResultReport = async (req, res, next) => {
   try {
     const {
       paperType = DEFAULT_PAPER_TYPE,
-      subject = "",
       grade = "",
+      stream = "",
+      subject = "",
       completedPaperCount = "",
+      page = DEFAULT_PAGE,
+      limit = DEFAULT_LIMIT,
     } = req.query;
 
+    const safePage = Math.max(1, Number(page) || DEFAULT_PAGE);
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || DEFAULT_LIMIT));
+
     const allPapers = await Paper.find({ isActive: true })
-      .select("_id paperType paperTitle gradeId subjectId")
+      .select(
+        "_id paperType paperTitle gradeId subjectId streamId streamSubjectId"
+      )
       .lean();
 
     if (!allPapers.length) {
@@ -196,8 +227,15 @@ export const getAdminResultReport = async (req, res, next) => {
         total: 0,
         filters: {
           paperTypes: [],
-          subjects: [],
           grades: [],
+          streams: [],
+          subjects: [],
+        },
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          totalRows: 0,
+          totalPages: 1,
         },
         rows: [],
       });
@@ -209,21 +247,21 @@ export const getAdminResultReport = async (req, res, next) => {
 
     const enrichedPapers = allPapers.map((paper) => {
       const gradeDoc = gradeMap.get(toId(paper.gradeId));
+      const { subject: subjectName, stream: streamName } =
+        getSubjectAndStreamFromGrade(gradeDoc, paper);
+
       return {
         _id: toId(paper._id),
         paperType: String(paper.paperType || "").trim(),
         paperName: String(paper.paperTitle || "").trim(),
         grade: formatGradeLabel(gradeDoc?.grade),
-        subject: getSubjectNameFromGrade(gradeDoc, paper.subjectId),
+        stream: String(streamName || "").trim(),
+        subject: String(subjectName || "").trim(),
       };
     });
 
-    const filterPaperTypes = uniqueValues(enrichedPapers.map((p) => p.paperType)).sort((a, b) =>
-      a.localeCompare(b)
-    );
-
-    const filterSubjects = uniqueValues(enrichedPapers.map((p) => p.subject)).sort((a, b) =>
-      a.localeCompare(b)
+    const filterPaperTypes = uniqueValues(enrichedPapers.map((p) => p.paperType)).sort(
+      (a, b) => a.localeCompare(b)
     );
 
     const filterGrades = uniqueValues(enrichedPapers.map((p) => p.grade)).sort((a, b) => {
@@ -232,24 +270,37 @@ export const getAdminResultReport = async (req, res, next) => {
       return na - nb;
     });
 
-    // ✅ default page should still show data even if subject/grade not selected
+    const filterStreams = uniqueValues(enrichedPapers.map((p) => p.stream)).sort((a, b) =>
+      a.localeCompare(b)
+    );
+
+    const filterSubjects = uniqueValues(enrichedPapers.map((p) => p.subject)).sort((a, b) =>
+      a.localeCompare(b)
+    );
+
     let filteredPapers = [...enrichedPapers];
 
     if (paperType) {
       filteredPapers = filteredPapers.filter(
-        (p) => String(p.paperType).toLowerCase() === String(paperType).toLowerCase()
-      );
-    }
-
-    if (subject) {
-      filteredPapers = filteredPapers.filter(
-        (p) => String(p.subject).toLowerCase() === String(subject).toLowerCase()
+        (p) => normalizeText(p.paperType) === normalizeText(paperType)
       );
     }
 
     if (grade) {
       filteredPapers = filteredPapers.filter(
-        (p) => String(p.grade).toLowerCase() === String(grade).toLowerCase()
+        (p) => normalizeText(p.grade) === normalizeText(grade)
+      );
+    }
+
+    if (stream) {
+      filteredPapers = filteredPapers.filter(
+        (p) => normalizeText(p.stream) === normalizeText(stream)
+      );
+    }
+
+    if (subject) {
+      filteredPapers = filteredPapers.filter(
+        (p) => normalizeText(p.subject) === normalizeText(subject)
       );
     }
 
@@ -259,8 +310,15 @@ export const getAdminResultReport = async (req, res, next) => {
         total: 0,
         filters: {
           paperTypes: filterPaperTypes,
-          subjects: filterSubjects,
           grades: filterGrades,
+          streams: filterStreams,
+          subjects: filterSubjects,
+        },
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          totalRows: 0,
+          totalPages: 1,
         },
         rows: [],
       });
@@ -274,7 +332,7 @@ export const getAdminResultReport = async (req, res, next) => {
       status: "submitted",
     })
       .select(
-        "paperId studentId attemptNo questionCount totalPossiblePoints totalPointsEarned correctCount percentage submittedAt updatedAt paymentType"
+        "paperId studentId questionCount totalPossiblePoints totalPointsEarned correctCount percentage submittedAt updatedAt paymentType"
       )
       .lean();
 
@@ -284,8 +342,15 @@ export const getAdminResultReport = async (req, res, next) => {
         total: 0,
         filters: {
           paperTypes: filterPaperTypes,
-          subjects: filterSubjects,
           grades: filterGrades,
+          streams: filterStreams,
+          subjects: filterSubjects,
+        },
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          totalRows: 0,
+          totalPages: 1,
         },
         rows: [],
       });
@@ -311,13 +376,15 @@ export const getAdminResultReport = async (req, res, next) => {
       }
     }
 
-    const studentIds = uniqueValues([...studentPaperBestMap.values()].map((x) => x.studentId));
+    const studentIds = uniqueValues(
+      [...studentPaperBestMap.values()].map((item) => item.studentId)
+    );
 
     const students = await User.find({
       _id: { $in: studentIds },
       role: "student",
     })
-      .select("name selectedGradeNumber")
+      .select("name selectedGradeNumber selectedStream")
       .lean();
 
     const studentMap = new Map(
@@ -326,11 +393,11 @@ export const getAdminResultReport = async (req, res, next) => {
         {
           name: String(s.name || "").trim(),
           grade: formatGradeLabel(s.selectedGradeNumber),
+          stream: String(s.selectedStream || "").trim(),
         },
       ])
     );
 
-    // ✅ NEW: Island Rank for these students (GLOBAL formula)
     let islandRankMap = new Map();
     try {
       islandRankMap = await buildIslandRankMapForStudents(studentIds);
@@ -356,11 +423,11 @@ export const getAdminResultReport = async (req, res, next) => {
           studentId: item.studentId,
           studentName: student.name || "-",
           grade: student.grade || paper.grade || "-",
-          islandRank: rank ? rank : "-", // ✅ MAIN TABLE rank
+          stream: student.stream || paper.stream || "-",
+          islandRank: rank ? rank : "-",
           subjects: [],
           completedPapersCount: 0,
           freePaperCount: 0,
-          practisePaperCount: 0,
           paidPaperCount: 0,
           results: [],
           highestScore: 0,
@@ -369,22 +436,25 @@ export const getAdminResultReport = async (req, res, next) => {
 
       const group = groupedByStudent.get(item.studentId);
 
-      group.subjects.push(paper.subject || "-");
+      if (paper.subject) {
+        group.subjects.push(paper.subject);
+      }
+
       group.completedPapersCount += 1;
 
-      const payType = String(best.paymentType || "").toLowerCase().trim();
+      const payType = normalizeText(best.paymentType);
       if (payType === "free") group.freePaperCount += 1;
-      else if (payType === "practise" || payType === "practice") group.practisePaperCount += 1;
-      else if (payType === "paid") group.paidPaperCount += 1;
+      if (payType === "paid") group.paidPaperCount += 1;
 
       group.results.push({
         paperName: paper.paperName || "-",
         subject: paper.subject || "-",
         grade: paper.grade || "-",
+        stream: paper.stream || "-",
         paperType: paper.paperType || "-",
         paymentType: payType || "-",
-        correctAnswers: `${Number(best.correctCount || 0)}/${Number(best.questionCount || 0)}`,
-        marks: `${Number(best.totalPointsEarned || 0)}/${Number(best.totalPossiblePoints || 0)}`,
+        correctAnswers: Number(best.correctCount || 0),
+        marks: Number(best.totalPointsEarned || 0),
         progress: formatPercentage(best.percentage),
         percentageValue: Number(best.percentage || 0),
       });
@@ -398,42 +468,54 @@ export const getAdminResultReport = async (req, res, next) => {
       ...row,
       subjects: uniqueValues(row.subjects).sort((a, b) => a.localeCompare(b)),
       results: [...row.results].sort((a, b) => {
-        const bp = Number(b.percentageValue || 0);
-        const ap = Number(a.percentageValue || 0);
-        if (bp !== ap) return bp - ap;
-        return String(a.paperName).localeCompare(String(b.paperName));
+        const byPercentage =
+          Number(b.percentageValue || 0) - Number(a.percentageValue || 0);
+        if (byPercentage !== 0) return byPercentage;
+        return String(a.paperName || "").localeCompare(String(b.paperName || ""));
       }),
     }));
 
     if (completedPaperCount) {
       const wanted = Number(completedPaperCount);
       if (!Number.isNaN(wanted)) {
-        rows = rows.filter((r) => Number(r.completedPapersCount || 0) === wanted);
+        rows = rows.filter(
+          (r) => Number(r.completedPapersCount || 0) === Number(wanted)
+        );
       }
     }
 
     rows = rows.sort((a, b) => {
-      // keep your previous sort (highest score first)
       const byScore = Number(b.highestScore || 0) - Number(a.highestScore || 0);
       if (byScore !== 0) return byScore;
 
-      // if same score, show smaller island rank first (rank 1 top)
       const ar = a.islandRank === "-" ? Number.MAX_SAFE_INTEGER : Number(a.islandRank || 0);
       const br = b.islandRank === "-" ? Number.MAX_SAFE_INTEGER : Number(b.islandRank || 0);
       if (ar !== br) return ar - br;
 
-      return String(a.studentName).localeCompare(String(b.studentName));
+      return String(a.studentName || "").localeCompare(String(b.studentName || ""));
     });
+
+    const totalRows = rows.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / safeLimit));
+    const startIndex = (safePage - 1) * safeLimit;
+    const paginatedRows = rows.slice(startIndex, startIndex + safeLimit);
 
     return res.status(200).json({
       message: "",
-      total: rows.length,
+      total: totalRows,
       filters: {
         paperTypes: filterPaperTypes,
-        subjects: filterSubjects,
         grades: filterGrades,
+        streams: filterStreams,
+        subjects: filterSubjects,
       },
-      rows,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        totalRows,
+        totalPages,
+      },
+      rows: paginatedRows,
     });
   } catch (err) {
     console.error("getAdminResultReport error:", err);
@@ -441,7 +523,7 @@ export const getAdminResultReport = async (req, res, next) => {
     if (String(err?.message || "").includes("$setWindowFields")) {
       return res.status(500).json({
         message:
-          "MongoDB does not support ranking ($setWindowFields). Upgrade MongoDB to 5.0+ (Atlas is OK).",
+          "MongoDB does not support ranking ($setWindowFields). Upgrade MongoDB to 5.0+.",
       });
     }
 

@@ -2,6 +2,9 @@ import express from "express";
 import {
   getStudentOptions,
   getStudents,
+  grantStudentAccess,
+  removeStudentAccess,
+  bulkRemoveClassAccess,
   banStudent,
   unbanStudent,
 } from "../application/studentAdmin.js";
@@ -10,9 +13,6 @@ import { authorize } from "./middlewares/authrization.js";
 
 const router = express.Router();
 
-/**
- * Admin Student Management
- */
 router.get(
   "/options",
   authenticate,
@@ -25,6 +25,27 @@ router.get(
   authenticate,
   authorize(["admin"]),
   getStudents
+);
+
+router.patch(
+  "/:id/access-grant",
+  authenticate,
+  authorize(["admin"]),
+  grantStudentAccess
+);
+
+router.patch(
+  "/:id/access-remove",
+  authenticate,
+  authorize(["admin"]),
+  removeStudentAccess
+);
+
+router.patch(
+  "/access-remove-all",
+  authenticate,
+  authorize(["admin"]),
+  bulkRemoveClassAccess
 );
 
 router.patch(

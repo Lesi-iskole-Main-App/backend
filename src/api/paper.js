@@ -14,11 +14,11 @@ import {
 
 const router = express.Router();
 
-// ✅ PUBLIC (Student App)
+// PUBLIC
 router.get("/public", getPublishedPapersPublic);
 router.get("/public/subjects", getPublicPaperSubjects);
 
-// ✅ ADMIN
+// ADMIN
 router.get("/form-data", authenticate, authorize(["admin"]), getPaperFormData);
 router.post("/", authenticate, authorize(["admin"]), createPaper);
 router.get("/", authenticate, authorize(["admin"]), getAllPapers);
