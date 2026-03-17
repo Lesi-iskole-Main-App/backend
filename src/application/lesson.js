@@ -31,6 +31,7 @@ const buildLessonClassDetails = async (classId) => {
     return {
       classId: classDoc._id,
       className: classDoc.className || "—",
+      batchNumber: classDoc.batchNumber || "",
       grade: null,
       stream: "",
       subject: "",
@@ -45,6 +46,7 @@ const buildLessonClassDetails = async (classId) => {
     return {
       classId: classDoc._id,
       className: classDoc.className || "—",
+      batchNumber: classDoc.batchNumber || "",
       grade: gradeDoc.grade || null,
       stream: "",
       subject: subjectObj?.subject || "",
@@ -62,6 +64,7 @@ const buildLessonClassDetails = async (classId) => {
   return {
     classId: classDoc._id,
     className: classDoc.className || "—",
+    batchNumber: classDoc.batchNumber || "",
     grade: gradeDoc.grade || null,
     stream: streamObj?.stream || "",
     subject: subjectObj?.subject || "",

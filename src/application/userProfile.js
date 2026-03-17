@@ -25,6 +25,7 @@ export const updateMyProfile = async (req, res, next) => {
       name,
       district,
       town,
+      selectedLevel,
       selectedGradeNumber,
       selectedStream,
     } = req.body || {};
@@ -55,22 +56,62 @@ export const updateMyProfile = async (req, res, next) => {
       user.town = normalizeText(town);
     }
 
-    if (typeof selectedGradeNumber !== "undefined") {
-      if (
-        selectedGradeNumber === null ||
-        String(selectedGradeNumber).trim() === ""
+    const cleanLevel = normalizeText(selectedLevel).toLowerCase();
+
+    if (
+      typeof selectedLevel !== "undefined" ||
+      typeof selectedGradeNumber !== "undefined" ||
+      typeof selectedStream !== "undefined"
+    ) {
+      if (cleanLevel === "al") {
+        const gradeDoc = await Grade.findOne({
+          flowType: "al",
+          grade: 12,
+          isActive: true,
+        }).lean();
+
+        if (!gradeDoc) {
+          return res.status(400).json({ message: "A/L flow not found" });
+        }
+
+        const cleanStream = normalizeKey(selectedStream);
+
+        if (!cleanStream) {
+          return res.status(400).json({ message: "Stream is required for A/L" });
+        }
+
+        const streamExists = Array.isArray(gradeDoc.streams)
+          ? gradeDoc.streams.some(
+              (st) => normalizeKey(st?.stream) === cleanStream
+            )
+          : false;
+
+        if (!streamExists) {
+          return res
+            .status(400)
+            .json({ message: "Invalid stream for selected grade" });
+        }
+
+        user.selectedLevel = "al";
+        user.selectedGradeNumber = 12;
+        user.selectedStream = cleanStream;
+      } else if (
+        typeof selectedGradeNumber !== "undefined" &&
+        selectedGradeNumber !== null &&
+        String(selectedGradeNumber).trim() !== ""
       ) {
-        user.selectedLevel = null;
-        user.selectedGradeNumber = null;
-        user.selectedStream = null;
-      } else {
         const gradeNumber = Number(selectedGradeNumber);
 
-        if (!Number.isInteger(gradeNumber) || gradeNumber < 1 || gradeNumber > 13) {
+        if (
+          !Number.isInteger(gradeNumber) ||
+          gradeNumber < 1 ||
+          gradeNumber > 11
+        ) {
           return res.status(400).json({ message: "Invalid grade number" });
         }
 
         const gradeDoc = await Grade.findOne({
+          flowType: "normal",
           grade: gradeNumber,
           isActive: true,
         }).lean();
@@ -80,73 +121,15 @@ export const updateMyProfile = async (req, res, next) => {
         }
 
         user.selectedGradeNumber = gradeNumber;
-        user.selectedLevel =
-          gradeDoc.flowType === "al"
-            ? "al"
-            : gradeNumber <= 5
-            ? "primary"
-            : "secondary";
-
-        if (gradeDoc.flowType === "al") {
-          const cleanStream = normalizeKey(selectedStream);
-
-          if (!cleanStream) {
-            return res.status(400).json({ message: "Stream is required for A/L" });
-          }
-
-          const streamExists = Array.isArray(gradeDoc.streams)
-            ? gradeDoc.streams.some(
-                (st) => normalizeKey(st?.stream) === cleanStream
-              )
-            : false;
-
-          if (!streamExists) {
-            return res
-              .status(400)
-              .json({ message: "Invalid stream for selected grade" });
-          }
-
-          user.selectedStream = cleanStream;
-        } else {
-          user.selectedStream = null;
-        }
-      }
-    } else if (typeof selectedStream !== "undefined") {
-      if (!user.selectedGradeNumber) {
+        user.selectedLevel = gradeNumber <= 5 ? "primary" : "secondary";
         user.selectedStream = null;
-      } else {
-        const gradeDoc = await Grade.findOne({
-          grade: user.selectedGradeNumber,
-          isActive: true,
-        }).lean();
-
-        if (!gradeDoc) {
-          return res.status(400).json({ message: "Selected grade not found" });
-        }
-
-        if (gradeDoc.flowType !== "al") {
-          user.selectedStream = null;
-        } else {
-          const cleanStream = normalizeKey(selectedStream);
-
-          if (!cleanStream) {
-            return res.status(400).json({ message: "Stream is required for A/L" });
-          }
-
-          const streamExists = Array.isArray(gradeDoc.streams)
-            ? gradeDoc.streams.some(
-                (st) => normalizeKey(st?.stream) === cleanStream
-              )
-            : false;
-
-          if (!streamExists) {
-            return res
-              .status(400)
-              .json({ message: "Invalid stream for selected grade" });
-          }
-
-          user.selectedStream = cleanStream;
-        }
+      } else if (
+        typeof selectedGradeNumber !== "undefined" &&
+        (selectedGradeNumber === null || String(selectedGradeNumber).trim() === "")
+      ) {
+        user.selectedLevel = null;
+        user.selectedGradeNumber = null;
+        user.selectedStream = null;
       }
     }
 

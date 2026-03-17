@@ -193,6 +193,7 @@ const buildClassResponse = (doc) => {
   if (!grade) {
     return {
       ...doc,
+      batchNumber: doc?.batchNumber || "",
       gradeNo: null,
       gradeLabel: "",
       streamName: "",
@@ -207,6 +208,7 @@ const buildClassResponse = (doc) => {
 
     return {
       ...doc,
+      batchNumber: doc?.batchNumber || "",
       gradeNo: grade.grade,
       gradeLabel: `Grade ${grade.grade}`,
       streamName: "",
@@ -225,6 +227,7 @@ const buildClassResponse = (doc) => {
 
     return {
       ...doc,
+      batchNumber: doc?.batchNumber || "",
       gradeNo: null,
       gradeLabel: "A/L",
       streamName: streamObj?.stream || "Unknown",
@@ -234,6 +237,7 @@ const buildClassResponse = (doc) => {
 
   return {
     ...doc,
+    batchNumber: doc?.batchNumber || "",
     gradeNo: null,
     gradeLabel: "",
     streamName: "",
@@ -246,6 +250,7 @@ export const createClass = async (req, res) => {
   try {
     const {
       className,
+      batchNumber,
       gradeId,
       subjectId = null,
       streamId = null,
@@ -255,10 +260,10 @@ export const createClass = async (req, res) => {
       imagePublicId = "",
     } = req.body;
 
-    if (!className || !gradeId) {
+    if (!className || !batchNumber || !gradeId) {
       return res
         .status(400)
-        .json({ message: "className and gradeId are required" });
+        .json({ message: "className, batchNumber and gradeId are required" });
     }
 
     if (!isValidId(gradeId)) {
@@ -278,6 +283,7 @@ export const createClass = async (req, res) => {
 
     const payload = {
       className: norm(className),
+      batchNumber: norm(batchNumber),
       gradeId,
       teacherIds,
       imageUrl: String(imageUrl || "").trim(),
@@ -303,7 +309,7 @@ export const createClass = async (req, res) => {
     if (err.code === 11000) {
       return res.status(409).json({
         message:
-          "Duplicate class (same className + grade + subject/stream subject)",
+          "Duplicate class (same className + batchNumber + grade + subject/stream subject)",
       });
     }
     return res.status(500).json({ message: "Internal server error" });
@@ -365,6 +371,7 @@ export const updateClassById = async (req, res) => {
 
     const {
       className,
+      batchNumber,
       gradeId,
       subjectId,
       streamId,
@@ -400,6 +407,7 @@ export const updateClassById = async (req, res) => {
     }
 
     if (className !== undefined) doc.className = norm(className);
+    if (batchNumber !== undefined) doc.batchNumber = norm(batchNumber);
     if (gradeId !== undefined) doc.gradeId = newGradeId;
     if (isActive !== undefined) doc.isActive = Boolean(isActive);
 
@@ -426,7 +434,7 @@ export const updateClassById = async (req, res) => {
     if (err.code === 11000) {
       return res.status(409).json({
         message:
-          "Duplicate class (same className + grade + subject/stream subject)",
+          "Duplicate class (same className + batchNumber + grade + subject/stream subject)",
       });
     }
     return res.status(500).json({ message: "Internal server error" });
@@ -532,6 +540,7 @@ export const getClassesPublic = async (req, res) => {
         return {
           _id: c._id,
           className: c.className,
+          batchNumber: c.batchNumber || "",
           gradeLabel: "A/L",
           streamName: st?.stream || selectedStreamName || "",
           subjectName: sub?.subject || selectedSubjectName || "",
@@ -595,6 +604,7 @@ export const getClassesPublic = async (req, res) => {
       return {
         _id: c._id,
         className: c.className,
+        batchNumber: c.batchNumber || "",
         gradeLabel: `Grade ${gradeNo}`,
         streamName: "",
         subjectName: sub?.subject || selectedSubjectName || "",

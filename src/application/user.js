@@ -321,7 +321,7 @@ export const rejectTeacher = async (req, res, next) => {
 export const saveStudentGradeSelection = async (req, res, next) => {
   try {
     const userId = req.user?.id;
-    const { grade, gradeNumber, stream } = req.body || {};
+    const { level, grade, gradeNumber, stream } = req.body || {};
 
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -339,47 +339,41 @@ export const saveStudentGradeSelection = async (req, res, next) => {
         .json({ message: "Only students can save grade selection" });
     }
 
-    if (user.gradeSelectionLocked) {
-      return res
-        .status(400)
-        .json({ message: "Grade selection already locked" });
-    }
-
+    const cleanLevel = normalizeText(level).toLowerCase();
     const cleanGrade = normalizeText(grade);
+    const cleanStream = normalizeKey(stream);
 
     let finalGradeNumber = Number(gradeNumber);
 
-    if (!Number.isFinite(finalGradeNumber)) {
+    if (cleanLevel === "al") {
+      finalGradeNumber = 12;
+    } else if (!Number.isFinite(finalGradeNumber)) {
       const gradeNumberMatch = cleanGrade.match(/(\d{1,2})/);
       finalGradeNumber = gradeNumberMatch
         ? Number(gradeNumberMatch[1])
         : Number(cleanGrade);
     }
 
-    if (!Number.isInteger(finalGradeNumber) || finalGradeNumber < 1 || finalGradeNumber > 13) {
+    if (
+      !Number.isInteger(finalGradeNumber) ||
+      finalGradeNumber < 1 ||
+      finalGradeNumber > 13
+    ) {
       return res.status(400).json({ message: "Valid grade is required" });
     }
 
-    const gradeDoc = await Grade.findOne({
-      grade: finalGradeNumber,
-      isActive: true,
-    }).lean();
+    const query =
+      cleanLevel === "al"
+        ? { flowType: "al", grade: 12, isActive: true }
+        : { flowType: "normal", grade: finalGradeNumber, isActive: true };
+
+    const gradeDoc = await Grade.findOne(query).lean();
 
     if (!gradeDoc) {
       return res.status(400).json({ message: "Selected grade not found" });
     }
 
-    user.selectedGradeNumber = finalGradeNumber;
-    user.selectedLevel =
-      gradeDoc.flowType === "al"
-        ? "al"
-        : finalGradeNumber <= 5
-        ? "primary"
-        : "secondary";
-
-    if (gradeDoc.flowType === "al") {
-      const cleanStream = normalizeKey(stream);
-
+    if (cleanLevel === "al" || gradeDoc.flowType === "al") {
       if (!cleanStream) {
         return res.status(400).json({ message: "Stream is required for A/L" });
       }
@@ -391,17 +385,21 @@ export const saveStudentGradeSelection = async (req, res, next) => {
         : false;
 
       if (!streamExists) {
-        return res.status(400).json({ message: "Invalid stream for selected grade" });
+        return res
+          .status(400)
+          .json({ message: "Invalid stream for selected grade" });
       }
 
+      user.selectedLevel = "al";
+      user.selectedGradeNumber = 12;
       user.selectedStream = cleanStream;
     } else {
+      user.selectedLevel = finalGradeNumber <= 5 ? "primary" : "secondary";
+      user.selectedGradeNumber = finalGradeNumber;
       user.selectedStream = null;
     }
 
-    user.gradeSelectionLocked = true;
     user.gradeSelectedAt = new Date();
-
     await user.save();
 
     return res.status(200).json({

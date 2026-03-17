@@ -5,6 +5,9 @@ const classSchema = new Schema(
   {
     className: { type: String, required: true, trim: true },
 
+    // ✅ NEW
+    batchNumber: { type: String, required: true, trim: true, index: true },
+
     // normal grade doc OR single al doc
     gradeId: { type: Schema.Types.ObjectId, ref: "Grade", required: true },
 
@@ -30,6 +33,7 @@ const classSchema = new Schema(
 classSchema.index(
   {
     className: 1,
+    batchNumber: 1,
     gradeId: 1,
     subjectId: 1,
   },
@@ -45,6 +49,7 @@ classSchema.index(
 classSchema.index(
   {
     className: 1,
+    batchNumber: 1,
     gradeId: 1,
     streamId: 1,
     streamSubjectId: 1,

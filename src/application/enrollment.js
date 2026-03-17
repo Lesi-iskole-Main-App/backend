@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import Enrollment from "../infastructure/schemas/enrollment.js";
-import User from "../infastructure/schemas/user.js";
+import User, { SL_PHONE_REGEX } from "../infastructure/schemas/user.js";
 import ClassModel from "../infastructure/schemas/class.js";
 import Grade from "../infastructure/schemas/grade.js";
 
@@ -11,6 +11,16 @@ const normalizeKey = (value) =>
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
+
+const normalizeSLPhone = (phone) => {
+  const p = String(phone || "").trim();
+
+  if (p.startsWith("+94")) return p;
+  if (p.startsWith("94")) return `+${p}`;
+  if (p.startsWith("0")) return `+94${p.slice(1)}`;
+
+  return p;
+};
 
 const AL_STREAM_LABELS = {
   physical_science: "Physical Science",
@@ -84,6 +94,7 @@ const classReadableDetails = async (classId) => {
   return {
     classId: cls._id,
     className: cls.className,
+    batchNumber: cls.batchNumber || "",
     flowType: gradeDoc.flowType || "normal",
     level: getLevelFromGradeDoc(gradeDoc),
     grade: gradeDoc?.grade ?? null,
@@ -123,14 +134,21 @@ export const requestEnroll = async (req, res) => {
     if (!cls) return res.status(404).json({ message: "Class not found" });
 
     const snapName = String(studentName || student.name || "").trim();
-    const snapPhone = String(studentPhone || student.phonenumber || "").trim();
+    const rawPhone = String(studentPhone || student.phonenumber || "").trim();
+    const snapPhone = normalizeSLPhone(rawPhone);
 
     if (!snapName) {
       return res.status(400).json({ message: "studentName is required" });
     }
 
-    if (!snapPhone) {
+    if (!rawPhone) {
       return res.status(400).json({ message: "studentPhone is required" });
+    }
+
+    if (!SL_PHONE_REGEX.test(rawPhone) && !SL_PHONE_REGEX.test(snapPhone)) {
+      return res.status(400).json({
+        message: "studentPhone must be a valid Sri Lankan phone number",
+      });
     }
 
     let doc;
@@ -223,6 +241,7 @@ export const getMyApprovedClasses = async (req, res) => {
         enrollId: row._id,
         classId: classDetails.classId,
         className: classDetails.className || "",
+        batchNumber: classDetails.batchNumber || "",
         grade: classDetails.grade || "",
         gradeLabel: classDetails.gradeLabel || "",
         flowType: classDetails.flowType || "normal",
@@ -363,11 +382,8 @@ export const getPendingEnrollRequests = async (req, res) => {
       const classDetails = await classReadableDetails(r.classId);
       if (!classDetails) continue;
 
-      const stu = await User.findById(r.studentId).select("email").lean();
-
       enriched.push({
         ...r,
-        studentEmail: stu?.email || "",
         classDetails,
       });
     }

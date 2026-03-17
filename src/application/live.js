@@ -59,6 +59,7 @@ const buildClassDetails = (classDoc, gradeDoc) => {
   if (!classDoc) {
     return {
       className: "—",
+      batchNumber: "",
       grade: null,
       subject: "—",
       teachers: [],
@@ -74,6 +75,7 @@ const buildClassDetails = (classDoc, gradeDoc) => {
 
   return {
     className: classObj.className || "—",
+    batchNumber: classObj.batchNumber || "",
     grade: gradeDoc?.grade ?? null,
     subject,
     teachers,

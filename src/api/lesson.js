@@ -13,15 +13,15 @@ import {
 
 const router = express.Router();
 
-// ✅ admin create/update/delete
+// admin create/update/delete
 router.post("/", authenticate, authorize(["admin"]), createLesson);
 router.patch("/:lessonId", authenticate, authorize(["admin"]), updateLessonById);
 router.delete("/:lessonId", authenticate, authorize(["admin"]), deleteLessonById);
 
-// ✅ admin can list all lessons
+// admin can list all lessons
 router.get("/", authenticate, authorize(["admin"]), getAllLessons);
 
-// ✅ student/admin: lessons by class
+// student/admin: lessons by class
 router.get(
   "/class/:classId",
   authenticate,
@@ -29,7 +29,7 @@ router.get(
   getLessonsByClassId
 );
 
-// ✅ student/admin: lesson by id
+// student/admin: lesson by id
 router.get("/:lessonId", authenticate, authorize(["admin", "student"]), getLessonById);
 
 export default router;

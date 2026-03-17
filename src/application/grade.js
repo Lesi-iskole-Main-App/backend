@@ -23,6 +23,11 @@ const attachStreamLabels = (streams = []) =>
     label: AL_STREAM_LABELS[s?.stream] || s?.stream,
   }));
 
+const filterAvailableStreamsOnly = (streams = []) =>
+  (streams || []).filter(
+    (s) => Array.isArray(s?.subjects) && s.subjects.length > 0
+  );
+
 const normalizeLegacyALDocInMemory = (gradeDoc) => {
   if (!gradeDoc || gradeDoc.flowType !== "al") return gradeDoc;
 
@@ -49,10 +54,7 @@ const normalizeLegacyALDocInMemory = (gradeDoc) => {
   gradeDoc.subjects = [];
 
   if (!gradeDoc.title) {
-    gradeDoc.title =
-      gradeDoc.grade && (gradeDoc.grade === 12 || gradeDoc.grade === 13)
-        ? `Grade ${gradeDoc.grade}`
-        : "A/L";
+    gradeDoc.title = "A/L";
   }
 
   return gradeDoc;
@@ -69,62 +71,11 @@ const buildSafeGradeResponse = (gradeDoc) => {
     obj.streams = attachStreamLabels(
       Array.isArray(obj.streams) ? obj.streams : []
     );
+    obj.title = "A/L";
+    obj.grade = 12;
   }
 
   return obj;
-};
-
-const mergeALStreamsFromGrades = (gradeDocs = []) => {
-  const map = new Map();
-
-  for (const streamName of AL_STREAM_ENUM) {
-    map.set(streamName, {
-      _id: `al-${streamName}`,
-      stream: streamName,
-      label: AL_STREAM_LABELS[streamName] || streamName,
-      gradeNumbers: [],
-      subjects: [],
-    });
-  }
-
-  for (const gradeDoc of gradeDocs) {
-    normalizeLegacyALDocInMemory(gradeDoc);
-
-    for (const st of gradeDoc.streams || []) {
-      const key = normalizeALStream(st?.stream);
-      if (!map.has(key)) continue;
-
-      const target = map.get(key);
-
-      if (
-        Number.isInteger(gradeDoc?.grade) &&
-        !target.gradeNumbers.includes(gradeDoc.grade)
-      ) {
-        target.gradeNumbers.push(gradeDoc.grade);
-      }
-
-      const existingSubjectKeys = new Set(
-        (target.subjects || []).map((sub) => toKey(sub.subject))
-      );
-
-      for (const sub of st?.subjects || []) {
-        const subjectName = toStr(sub?.subject);
-        const subjectKey = toKey(subjectName);
-        if (!subjectKey || existingSubjectKeys.has(subjectKey)) continue;
-
-        target.subjects.push({
-          _id: sub?._id || new mongoose.Types.ObjectId(),
-          subject: subjectName,
-        });
-
-        existingSubjectKeys.add(subjectKey);
-      }
-    }
-  }
-
-  return Array.from(map.values())
-    .filter((s) => s.gradeNumbers.length > 0 || s.subjects.length > 0)
-    .sort((a, b) => a.label.localeCompare(b.label));
 };
 
 /* =========================================================
@@ -135,10 +86,9 @@ export const createGrade = async (req, res) => {
   try {
     const rawGrade = req.body?.grade;
     const flowTypeInput = toKey(req.body?.flowType);
-    const gradeNumber = Number(rawGrade);
 
-    const wantsAL =
-      flowTypeInput === "al" || gradeNumber === 12 || gradeNumber === 13;
+    const wantsAL = flowTypeInput === "al" || rawGrade === "al" || rawGrade === 12;
+    const gradeNumber = wantsAL ? 12 : Number(rawGrade);
 
     const wantsNormal =
       flowTypeInput === "normal" ||
@@ -146,13 +96,7 @@ export const createGrade = async (req, res) => {
 
     if (!wantsAL && !wantsNormal) {
       return res.status(400).json({
-        message: "grade must be between 1 and 13",
-      });
-    }
-
-    if (wantsAL && !(gradeNumber === 12 || gradeNumber === 13)) {
-      return res.status(400).json({
-        message: "A/L grades must be 12 or 13",
+        message: "grade must be between 1 and 11 or A/L",
       });
     }
 
@@ -166,7 +110,7 @@ export const createGrade = async (req, res) => {
 
     const exists = await Grade.findOne({
       flowType: finalFlowType,
-      grade: gradeNumber,
+      grade: wantsAL ? 12 : gradeNumber,
     });
 
     if (exists) {
@@ -178,8 +122,8 @@ export const createGrade = async (req, res) => {
 
     const grade = await Grade.create({
       flowType: finalFlowType,
-      grade: gradeNumber,
-      title: `Grade ${gradeNumber}`,
+      grade: wantsAL ? 12 : gradeNumber,
+      title: wantsAL ? "A/L" : `Grade ${gradeNumber}`,
       subjects: [],
       streams:
         finalFlowType === "al"
@@ -221,6 +165,8 @@ export const updateGradeById = async (req, res) => {
 
     if (grade.flowType === "al") {
       normalizeLegacyALDocInMemory(grade);
+      grade.title = "A/L";
+      grade.grade = 12;
     }
 
     await grade.save();
@@ -653,14 +599,22 @@ export const deleteStreamSubjectById = async (req, res) => {
 
 export const getGradesPublic = async (req, res) => {
   try {
-    const grades = await Grade.find({ isActive: true }).sort({ flowType: 1, grade: 1 });
-
-    const safeGrades = grades.map((g) => {
-      if (g.flowType === "al") {
-        normalizeLegacyALDocInMemory(g);
-      }
-      return buildSafeGradeResponse(g);
+    const grades = await Grade.find({ isActive: true }).sort({
+      flowType: 1,
+      grade: 1,
     });
+
+    const seen = new Set();
+    const safeGrades = [];
+
+    for (const g of grades) {
+      if (g.flowType === "al") {
+        if (seen.has("al")) continue;
+        normalizeLegacyALDocInMemory(g);
+        seen.add("al");
+      }
+      safeGrades.push(buildSafeGradeResponse(g));
+    }
 
     return res.status(200).json({ grades: safeGrades });
   } catch (err) {
@@ -671,7 +625,21 @@ export const getGradesPublic = async (req, res) => {
 
 export const getGradeDetailPublic = async (req, res) => {
   try {
-    const raw = String(req.params.gradeNumber || "").trim();
+    const raw = String(req.params.gradeNumber || "").trim().toLowerCase();
+
+    if (raw === "al") {
+      const gradeDoc = await Grade.findOne({
+        flowType: "al",
+        grade: 12,
+        isActive: true,
+      });
+
+      if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
+
+      normalizeLegacyALDocInMemory(gradeDoc);
+      return res.status(200).json({ grade: buildSafeGradeResponse(gradeDoc) });
+    }
+
     const gradeNumber = Number(raw);
 
     if (!Number.isInteger(gradeNumber) || gradeNumber < 1 || gradeNumber > 13) {
@@ -680,11 +648,12 @@ export const getGradeDetailPublic = async (req, res) => {
 
     const flowType = gradeNumber >= 12 ? "al" : "normal";
 
-    const gradeDoc = await Grade.findOne({
-      flowType,
-      grade: gradeNumber,
-      isActive: true,
-    });
+    const query =
+      flowType === "al"
+        ? { flowType: "al", grade: 12, isActive: true }
+        : { flowType, grade: gradeNumber, isActive: true };
+
+    const gradeDoc = await Grade.findOne(query);
 
     if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
 
@@ -703,19 +672,24 @@ export const getStreamsSmart = async (req, res) => {
   try {
     const value = String(req.params.value || "").trim().toLowerCase();
 
-    if (value === "al") {
-      const alGrades = await Grade.find({
+    if (value === "al" || value === "12" || value === "13") {
+      const gradeDoc = await Grade.findOne({
         flowType: "al",
+        grade: 12,
         isActive: true,
-      }).sort({ grade: 1 });
+      });
 
-      if (!alGrades.length) {
-        return res.status(404).json({ message: "A/L grades not found" });
+      if (!gradeDoc) {
+        return res.status(404).json({ message: "A/L flow not found" });
       }
 
-      const streams = mergeALStreamsFromGrades(alGrades);
+      normalizeLegacyALDocInMemory(gradeDoc);
 
-      return res.status(200).json({ streams });
+      const availableStreams = filterAvailableStreamsOnly(gradeDoc.streams || []);
+
+      return res.status(200).json({
+        streams: attachStreamLabels(availableStreams),
+      });
     }
 
     if (isValidObjectId(value)) {
@@ -728,44 +702,28 @@ export const getStreamsSmart = async (req, res) => {
 
       normalizeLegacyALDocInMemory(gradeDoc);
 
+      const availableStreams = filterAvailableStreamsOnly(gradeDoc.streams || []);
+
       return res.status(200).json({
-        streams: attachStreamLabels(gradeDoc.streams || []),
+        streams: attachStreamLabels(availableStreams),
       });
     }
 
     const gradeNumber = Number(value);
 
-    if (!Number.isInteger(gradeNumber) || gradeNumber < 1 || gradeNumber > 13) {
+    if (!Number.isInteger(gradeNumber) || gradeNumber < 1 || gradeNumber > 11) {
       return res.status(400).json({ message: "Invalid grade value" });
     }
 
-    if (gradeNumber >= 1 && gradeNumber <= 11) {
-      const gradeDoc = await Grade.findOne({
-        flowType: "normal",
-        grade: gradeNumber,
-        isActive: true,
-      });
-
-      if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
-
-      return res.status(200).json({ streams: [] });
-    }
-
     const gradeDoc = await Grade.findOne({
-      flowType: "al",
+      flowType: "normal",
       grade: gradeNumber,
       isActive: true,
     });
 
-    if (!gradeDoc) {
-      return res.status(404).json({ message: "A/L grade not found" });
-    }
+    if (!gradeDoc) return res.status(404).json({ message: "Grade not found" });
 
-    normalizeLegacyALDocInMemory(gradeDoc);
-
-    return res.status(200).json({
-      streams: attachStreamLabels(gradeDoc.streams || []),
-    });
+    return res.status(200).json({ streams: [] });
   } catch (err) {
     console.error("getStreamsSmart error:", err);
     return res.status(500).json({ message: "Internal server error" });
