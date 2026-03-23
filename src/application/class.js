@@ -12,6 +12,12 @@ const normalizeKey = (value) =>
     .toLowerCase()
     .replace(/\s+/g, "_");
 
+const normalizeSubjectKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
 const AL_STREAM_LABELS = {
   physical_science: "Physical Science",
   biological_science: "Biological Science",
@@ -19,6 +25,11 @@ const AL_STREAM_LABELS = {
   arts: "Arts",
   technology: "Technology",
   common: "Common",
+};
+
+const getStreamLabel = (value) => {
+  const key = normalizeKey(value);
+  return AL_STREAM_LABELS[key] || value || "";
 };
 
 const matchALStream = (streamValue, input) => {
@@ -61,12 +72,47 @@ const validateTeachers = async (teacherIds) => {
   return { ok: true };
 };
 
-const validateGradeRelation = async ({
-  gradeId,
-  subjectId,
-  streamId,
-  streamSubjectId,
-}) => {
+const getALSubjectRelation = (grade, alSubjectName) => {
+  const cleanName = String(alSubjectName || "").trim();
+  const subjectKey = normalizeSubjectKey(cleanName);
+
+  if (!subjectKey) {
+    return {
+      ok: false,
+      code: 400,
+      message: "alSubjectName is required for A/L",
+    };
+  }
+
+  const matchedStreams = (grade?.streams || []).filter((st) =>
+    (st?.subjects || []).some(
+      (sub) => normalizeSubjectKey(sub?.subject) === subjectKey
+    )
+  );
+
+  if (matchedStreams.length === 0) {
+    return {
+      ok: false,
+      code: 400,
+      message: "A/L subject not found in any stream",
+    };
+  }
+
+  const foundSubject =
+    matchedStreams
+      .flatMap((st) => st?.subjects || [])
+      .find((sub) => normalizeSubjectKey(sub?.subject) === subjectKey) || null;
+
+  return {
+    ok: true,
+    subjectName: cleanName || foundSubject?.subject || "",
+    subjectKey,
+    streamIds: matchedStreams.map((st) => st._id),
+    streamNames: matchedStreams.map((st) => getStreamLabel(st?.stream)),
+  };
+};
+
+const validateGradeRelation = async ({ gradeId, subjectId, alSubjectName }) => {
   const grade = await Grade.findById(gradeId).lean();
   if (!grade) return { ok: false, code: 404, message: "Grade not found" };
 
@@ -99,84 +145,41 @@ const validateGradeRelation = async ({
       };
     }
 
+    const subjectObj = (grade.subjects || []).find(
+      (s) => String(s._id) === String(subjectId)
+    );
+
     return {
       ok: true,
       grade,
       mode: "normal",
       gradeNo: grade.grade,
       gradeLabel: `Grade ${grade.grade}`,
-      subjectName:
-        (grade.subjects || []).find((s) => String(s._id) === String(subjectId))
-          ?.subject || "",
+      subjectName: subjectObj?.subject || "",
       streamName: "",
+      streamNames: [],
+      streamIds: [],
+      alSubjectName: "",
+      alSubjectKey: "",
     };
   }
 
   if (grade.flowType === "al") {
-    if (!streamId) {
-      return {
-        ok: false,
-        code: 400,
-        message: "streamId is required for A/L",
-      };
-    }
-
-    if (!streamSubjectId) {
-      return {
-        ok: false,
-        code: 400,
-        message: "streamSubjectId is required for A/L",
-      };
-    }
-
-    if (!isValidId(streamId)) {
-      return {
-        ok: false,
-        code: 400,
-        message: "Invalid streamId",
-      };
-    }
-
-    if (!isValidId(streamSubjectId)) {
-      return {
-        ok: false,
-        code: 400,
-        message: "Invalid streamSubjectId",
-      };
-    }
-
-    const streamObj = (grade.streams || []).find(
-      (s) => String(s._id) === String(streamId)
-    );
-
-    if (!streamObj) {
-      return {
-        ok: false,
-        code: 400,
-        message: "streamId does not belong to A/L",
-      };
-    }
-
-    const subjectObj = (streamObj.subjects || []).find(
-      (s) => String(s._id) === String(streamSubjectId)
-    );
-
-    if (!subjectObj) {
-      return {
-        ok: false,
-        code: 400,
-        message: "streamSubjectId does not belong to this stream",
-      };
-    }
+    const alRel = getALSubjectRelation(grade, alSubjectName);
+    if (!alRel.ok) return alRel;
 
     return {
       ok: true,
       grade,
       mode: "al",
-      gradeNo: null,
+      gradeNo: 12,
       gradeLabel: "A/L",
-      streamName: streamObj.stream || "",
-      subjectName: subjectObj.subject || "",
+      subjectName: alRel.subjectName,
+      streamName: alRel.streamNames.join(", "),
+      streamNames: alRel.streamNames,
+      streamIds: alRel.streamIds,
+      alSubjectName: alRel.subjectName,
+      alSubjectKey: alRel.subjectKey,
     };
   }
 
@@ -197,6 +200,7 @@ const buildClassResponse = (doc) => {
       gradeNo: null,
       gradeLabel: "",
       streamName: "",
+      streamNames: [],
       subjectName: "",
     };
   }
@@ -212,26 +216,28 @@ const buildClassResponse = (doc) => {
       gradeNo: grade.grade,
       gradeLabel: `Grade ${grade.grade}`,
       streamName: "",
+      streamNames: [],
       subjectName: subjectObj?.subject || "Unknown",
     };
   }
 
   if (grade.flowType === "al") {
-    const streamObj = (grade.streams || []).find(
-      (s) => String(s._id) === String(doc.streamId)
-    );
+    const streamIds = Array.isArray(doc?.streamIds)
+      ? doc.streamIds.map((x) => String(x))
+      : [];
 
-    const subjectObj = (streamObj?.subjects || []).find(
-      (s) => String(s._id) === String(doc.streamSubjectId)
-    );
+    const streamNames = (grade.streams || [])
+      .filter((s) => streamIds.includes(String(s._id)))
+      .map((s) => getStreamLabel(s?.stream));
 
     return {
       ...doc,
       batchNumber: doc?.batchNumber || "",
-      gradeNo: null,
+      gradeNo: 12,
       gradeLabel: "A/L",
-      streamName: streamObj?.stream || "Unknown",
-      subjectName: subjectObj?.subject || "Unknown",
+      streamName: streamNames.join(", "),
+      streamNames,
+      subjectName: doc?.alSubjectName || "Unknown",
     };
   }
 
@@ -241,6 +247,7 @@ const buildClassResponse = (doc) => {
     gradeNo: null,
     gradeLabel: "",
     streamName: "",
+    streamNames: [],
     subjectName: "",
   };
 };
@@ -253,8 +260,7 @@ export const createClass = async (req, res) => {
       batchNumber,
       gradeId,
       subjectId = null,
-      streamId = null,
-      streamSubjectId = null,
+      alSubjectName = "",
       teacherIds = [],
       imageUrl = "",
       imagePublicId = "",
@@ -273,8 +279,7 @@ export const createClass = async (req, res) => {
     const rel = await validateGradeRelation({
       gradeId,
       subjectId,
-      streamId,
-      streamSubjectId,
+      alSubjectName,
     });
     if (!rel.ok) return res.status(rel.code).json({ message: rel.message });
 
@@ -289,16 +294,21 @@ export const createClass = async (req, res) => {
       imageUrl: String(imageUrl || "").trim(),
       imagePublicId: String(imagePublicId || "").trim(),
       createdBy: req.user?.id || null,
+
       subjectId: null,
       streamId: null,
       streamSubjectId: null,
+      alSubjectName: "",
+      alSubjectKey: "",
+      streamIds: [],
     };
 
     if (rel.mode === "normal") {
       payload.subjectId = subjectId;
     } else {
-      payload.streamId = streamId;
-      payload.streamSubjectId = streamSubjectId;
+      payload.alSubjectName = rel.alSubjectName;
+      payload.alSubjectKey = rel.alSubjectKey;
+      payload.streamIds = rel.streamIds || [];
     }
 
     const doc = await ClassModel.create(payload);
@@ -309,7 +319,7 @@ export const createClass = async (req, res) => {
     if (err.code === 11000) {
       return res.status(409).json({
         message:
-          "Duplicate class (same className + batchNumber + grade + subject/stream subject)",
+          "Duplicate class (same className + batchNumber + grade + subject)",
       });
     }
     return res.status(500).json({ message: "Internal server error" });
@@ -374,8 +384,7 @@ export const updateClassById = async (req, res) => {
       batchNumber,
       gradeId,
       subjectId,
-      streamId,
-      streamSubjectId,
+      alSubjectName,
       teacherIds,
       isActive,
       imageUrl,
@@ -384,9 +393,8 @@ export const updateClassById = async (req, res) => {
 
     const newGradeId = gradeId !== undefined ? gradeId : doc.gradeId;
     const newSubjectId = subjectId !== undefined ? subjectId : doc.subjectId;
-    const newStreamId = streamId !== undefined ? streamId : doc.streamId;
-    const newStreamSubjectId =
-      streamSubjectId !== undefined ? streamSubjectId : doc.streamSubjectId;
+    const newALSubjectName =
+      alSubjectName !== undefined ? alSubjectName : doc.alSubjectName;
 
     if (!isValidId(newGradeId)) {
       return res.status(400).json({ message: "Invalid gradeId" });
@@ -395,8 +403,7 @@ export const updateClassById = async (req, res) => {
     const rel = await validateGradeRelation({
       gradeId: newGradeId,
       subjectId: newSubjectId,
-      streamId: newStreamId,
-      streamSubjectId: newStreamSubjectId,
+      alSubjectName: newALSubjectName,
     });
     if (!rel.ok) return res.status(rel.code).json({ message: rel.message });
 
@@ -415,10 +422,16 @@ export const updateClassById = async (req, res) => {
       doc.subjectId = newSubjectId;
       doc.streamId = null;
       doc.streamSubjectId = null;
+      doc.alSubjectName = "";
+      doc.alSubjectKey = "";
+      doc.streamIds = [];
     } else {
       doc.subjectId = null;
-      doc.streamId = newStreamId;
-      doc.streamSubjectId = newStreamSubjectId;
+      doc.streamId = null;
+      doc.streamSubjectId = null;
+      doc.alSubjectName = rel.alSubjectName;
+      doc.alSubjectKey = rel.alSubjectKey;
+      doc.streamIds = rel.streamIds || [];
     }
 
     if (imageUrl !== undefined) doc.imageUrl = String(imageUrl || "").trim();
@@ -434,7 +447,7 @@ export const updateClassById = async (req, res) => {
     if (err.code === 11000) {
       return res.status(409).json({
         message:
-          "Duplicate class (same className + batchNumber + grade + subject/stream subject)",
+          "Duplicate class (same className + batchNumber + grade + subject)",
       });
     }
     return res.status(500).json({ message: "Internal server error" });
@@ -485,43 +498,51 @@ export const getClassesPublic = async (req, res) => {
 
       query.gradeId = gradeDoc._id;
 
-      let selectedStreamName = "";
+      let matchedStream = null;
       let selectedSubjectName = "";
 
-      let streamObj = null;
-
       if (streamName) {
-        streamObj = (gradeDoc.streams || []).find((s) =>
+        matchedStream = (gradeDoc.streams || []).find((s) =>
           matchALStream(s?.stream, streamName)
         );
 
-        if (!streamObj) {
+        if (!matchedStream) {
           return res.status(404).json({ message: "Stream not found in A/L" });
         }
-
-        query.streamId = streamObj._id;
-        selectedStreamName = streamObj.stream;
       }
 
       if (subjectName) {
-        if (!streamObj) {
-          return res.status(400).json({
-            message: "streamName is required when filtering A/L subject",
-          });
+        const subjectKey = normalizeSubjectKey(subjectName);
+
+        if (matchedStream) {
+          const existsInThatStream = (matchedStream.subjects || []).some(
+            (s) => normalizeSubjectKey(s?.subject) === subjectKey
+          );
+
+          if (!existsInThatStream) {
+            return res.status(404).json({ message: "Subject not found in stream" });
+          }
         }
 
-        const subjectObj = (streamObj.subjects || []).find(
-          (s) =>
-            String(s?.subject || "").trim().toLowerCase() ===
-            subjectName.toLowerCase()
-        );
+        query.alSubjectKey = subjectKey;
 
-        if (!subjectObj) {
-          return res.status(404).json({ message: "Subject not found in stream" });
+        const foundAny = (gradeDoc.streams || [])
+          .flatMap((s) => s.subjects || [])
+          .find((s) => normalizeSubjectKey(s?.subject) === subjectKey);
+
+        if (!foundAny) {
+          return res.status(404).json({ message: "Subject not found in A/L" });
         }
 
-        query.streamSubjectId = subjectObj._id;
-        selectedSubjectName = subjectObj.subject;
+        selectedSubjectName = foundAny.subject;
+      } else if (matchedStream) {
+        const subjectKeys = [...new Set(
+          (matchedStream.subjects || [])
+            .map((s) => normalizeSubjectKey(s?.subject))
+            .filter(Boolean)
+        )];
+
+        query.alSubjectKey = { $in: subjectKeys };
       }
 
       const list = await ClassModel.find(query)
@@ -530,20 +551,22 @@ export const getClassesPublic = async (req, res) => {
         .lean();
 
       const classes = list.map((c) => {
-        const st = (gradeDoc.streams || []).find(
-          (s) => String(s._id) === String(c.streamId)
-        );
-        const sub = (st?.subjects || []).find(
-          (s) => String(s._id) === String(c.streamSubjectId)
-        );
+        const streamIds = Array.isArray(c?.streamIds)
+          ? c.streamIds.map((x) => String(x))
+          : [];
+
+        const streamNames = (gradeDoc.streams || [])
+          .filter((s) => streamIds.includes(String(s._id)))
+          .map((s) => getStreamLabel(s?.stream));
 
         return {
           _id: c._id,
           className: c.className,
           batchNumber: c.batchNumber || "",
           gradeLabel: "A/L",
-          streamName: st?.stream || selectedStreamName || "",
-          subjectName: sub?.subject || selectedSubjectName || "",
+          streamName: streamNames.join(", "),
+          streamNames,
+          subjectName: c.alSubjectName || selectedSubjectName || "",
           imageUrl: c.imageUrl || "",
           teacherCount: Array.isArray(c.teacherIds) ? c.teacherIds.length : 0,
           teachers: (c.teacherIds || []).map((t) => ({
@@ -607,6 +630,7 @@ export const getClassesPublic = async (req, res) => {
         batchNumber: c.batchNumber || "",
         gradeLabel: `Grade ${gradeNo}`,
         streamName: "",
+        streamNames: [],
         subjectName: sub?.subject || selectedSubjectName || "",
         imageUrl: c.imageUrl || "",
         teacherCount: Array.isArray(c.teacherIds) ? c.teacherIds.length : 0,

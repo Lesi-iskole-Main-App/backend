@@ -25,34 +25,24 @@ const normalizeZoomLinks = (body = {}) => {
   return [];
 };
 
-const getSubjectNameFromGrade = (gradeDoc, classObj) => {
-  if (!gradeDoc || !classObj) return "—";
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
 
-  if (classObj?.subjectId && Array.isArray(gradeDoc.subjects)) {
-    const foundSubject = gradeDoc.subjects.find(
-      (s) => String(s?._id) === String(classObj.subjectId)
-    );
-    if (foundSubject?.subject) return foundSubject.subject;
-  }
+const normalizeKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
 
-  if (
-    classObj?.streamId &&
-    classObj?.streamSubjectId &&
-    Array.isArray(gradeDoc.streams)
-  ) {
-    const foundStream = gradeDoc.streams.find(
-      (st) => String(st?._id) === String(classObj.streamId)
-    );
-
-    if (foundStream?.subjects?.length) {
-      const foundStreamSubject = foundStream.subjects.find(
-        (sub) => String(sub?._id) === String(classObj.streamSubjectId)
-      );
-      if (foundStreamSubject?.subject) return foundStreamSubject.subject;
-    }
-  }
-
-  return "—";
+const getStreamLabel = (streamValue) => {
+  const key = normalizeKey(streamValue);
+  return AL_STREAM_LABELS[key] || streamValue || "";
 };
 
 const buildClassDetails = (classDoc, gradeDoc) => {
@@ -62,6 +52,7 @@ const buildClassDetails = (classDoc, gradeDoc) => {
       batchNumber: "",
       grade: null,
       subject: "—",
+      streams: [],
       teachers: [],
     };
   }
@@ -71,13 +62,46 @@ const buildClassDetails = (classDoc, gradeDoc) => {
   const teachers =
     (classObj.teacherIds || []).map((t) => t?.name).filter(Boolean) || [];
 
-  const subject = getSubjectNameFromGrade(gradeDoc, classObj);
+  if (!gradeDoc) {
+    return {
+      className: classObj.className || "—",
+      batchNumber: classObj.batchNumber || "",
+      grade: null,
+      subject: "—",
+      streams: [],
+      teachers,
+    };
+  }
+
+  if (gradeDoc.flowType === "normal") {
+    const foundSubject = (gradeDoc.subjects || []).find(
+      (s) => String(s?._id) === String(classObj.subjectId)
+    );
+
+    return {
+      className: classObj.className || "—",
+      batchNumber: classObj.batchNumber || "",
+      grade: gradeDoc.grade ?? null,
+      subject: foundSubject?.subject || "—",
+      streams: [],
+      teachers,
+    };
+  }
+
+  const streamIds = Array.isArray(classObj.streamIds)
+    ? classObj.streamIds.map((x) => String(x))
+    : [];
+
+  const streams = (gradeDoc.streams || [])
+    .filter((s) => streamIds.includes(String(s._id)))
+    .map((s) => getStreamLabel(s?.stream));
 
   return {
     className: classObj.className || "—",
     batchNumber: classObj.batchNumber || "",
-    grade: gradeDoc?.grade ?? null,
-    subject,
+    grade: 12,
+    subject: classObj.alSubjectName || "—",
+    streams,
     teachers,
   };
 };

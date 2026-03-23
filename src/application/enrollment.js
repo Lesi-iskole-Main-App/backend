@@ -34,42 +34,15 @@ const AL_STREAM_LABELS = {
   common: "Common",
 };
 
-const getSubjectNameFromGrade = (gradeDoc, cls) => {
-  if (!gradeDoc || !cls) return "Unknown";
-
-  if (gradeDoc.flowType === "normal") {
-    return (
-      (gradeDoc.subjects || []).find(
-        (s) => String(s._id) === String(cls.subjectId)
-      )?.subject || "Unknown"
-    );
+const getString = (...values) => {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) return text;
   }
-
-  if (gradeDoc.flowType === "al") {
-    const streamObj = (gradeDoc.streams || []).find(
-      (s) => String(s._id) === String(cls.streamId)
-    );
-
-    return (
-      (streamObj?.subjects || []).find(
-        (s) => String(s._id) === String(cls.streamSubjectId)
-      )?.subject || "Unknown"
-    );
-  }
-
-  return "Unknown";
+  return "";
 };
 
-const getStreamNameFromGrade = (gradeDoc, cls) => {
-  if (!gradeDoc || !cls) return "";
-  if (gradeDoc.flowType !== "al") return "";
-
-  const streamObj = (gradeDoc.streams || []).find(
-    (s) => String(s._id) === String(cls.streamId)
-  );
-
-  return String(streamObj?.stream || "").trim();
-};
+const idsEqual = (a, b) => String(a || "").trim() === String(b || "").trim();
 
 const getStreamLabel = (streamKey) => {
   const key = normalizeKey(streamKey);
@@ -84,11 +57,55 @@ const getLevelFromGradeDoc = (gradeDoc) => {
   return "";
 };
 
+const getSubjectNameFromGrade = (gradeDoc, cls) => {
+  if (!cls) return "Unknown";
+
+  // ✅ current A/L class logic
+  if (String(gradeDoc?.flowType || "") === "al") {
+    const alSubject = getString(cls.alSubjectName);
+    if (alSubject) return alSubject;
+  }
+
+  // ✅ normal class subject from grade subjectId
+  if (String(gradeDoc?.flowType || "") === "normal") {
+    const subjectObj = (gradeDoc?.subjects || []).find((s) =>
+      idsEqual(s._id, cls.subjectId)
+    );
+
+    return getString(subjectObj?.subject) || "Unknown";
+  }
+
+  // ✅ legacy A/L fallback
+  if (String(gradeDoc?.flowType || "") === "al") {
+    const streamObj = (gradeDoc?.streams || []).find((s) =>
+      idsEqual(s._id, cls.streamId)
+    );
+
+    const subjectObj = (streamObj?.subjects || []).find((s) =>
+      idsEqual(s._id, cls.streamSubjectId)
+    );
+
+    return getString(subjectObj?.subject) || "Unknown";
+  }
+
+  return "Unknown";
+};
+
+const getStreamNameFromGrade = (gradeDoc, cls) => {
+  if (!cls || !gradeDoc || gradeDoc.flowType !== "al") return "";
+
+  const legacyStreamObj = (gradeDoc.streams || []).find((s) =>
+    idsEqual(s._id, cls.streamId)
+  );
+
+  return getString(legacyStreamObj?.stream);
+};
+
 const classReadableDetails = async (classId) => {
   const cls = await ClassModel.findById(classId).lean();
   if (!cls) return null;
 
-  const gradeDoc = await Grade.findById(cls.gradeId).lean();
+  const gradeDoc = cls.gradeId ? await Grade.findById(cls.gradeId).lean() : null;
   if (!gradeDoc) return null;
 
   const subject = getSubjectNameFromGrade(gradeDoc, cls);
@@ -96,11 +113,11 @@ const classReadableDetails = async (classId) => {
 
   return {
     classId: cls._id,
-    className: cls.className,
-    batchNumber: cls.batchNumber || "",
-    flowType: gradeDoc.flowType || "normal",
+    className: getString(cls.className),
+    batchNumber: getString(cls.batchNumber),
+    flowType: String(gradeDoc.flowType || "normal"),
     level: getLevelFromGradeDoc(gradeDoc),
-    grade: gradeDoc?.grade ?? null,
+    grade: Number(gradeDoc?.grade || 0) || null,
     gradeLabel:
       gradeDoc.flowType === "al"
         ? "A/L"
@@ -110,7 +127,7 @@ const classReadableDetails = async (classId) => {
     stream,
     streamLabel: stream ? getStreamLabel(stream) : "",
     subject,
-    imageUrl: cls.imageUrl || "",
+    imageUrl: getString(cls.imageUrl),
   };
 };
 
@@ -296,7 +313,7 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
       status: "pending",
       isActive: true,
     })
-      .select("classId studentPhone")
+      .select("classId")
       .lean();
 
     const classIds = [
@@ -305,13 +322,8 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
 
     if (!classIds.length) {
       return res.status(200).json({
-        levels: [
-          { value: "primary", label: "Primary" },
-          { value: "secondary", label: "Secondary" },
-          { value: "al", label: "A/L" },
-        ],
         grades: [],
-        streams: [],
+        subjects: [],
         batchNumbers: [],
       });
     }
@@ -320,65 +332,70 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
       _id: { $in: classIds },
       isActive: true,
     })
-      .select("_id gradeId streamId batchNumber")
+      .select(
+        "_id gradeId subjectId streamId streamSubjectId alSubjectName alSubjectKey batchNumber"
+      )
       .lean();
 
     const gradeIds = [
       ...new Set(classDocs.map((c) => String(c.gradeId)).filter(Boolean)),
     ];
 
-    const gradeDocs = await Grade.find({ _id: { $in: gradeIds }, isActive: true })
-      .select("flowType grade streams")
-      .lean();
+    const gradeDocs = gradeIds.length
+      ? await Grade.find({ _id: { $in: gradeIds }, isActive: true })
+          .select("flowType grade subjects streams")
+          .lean()
+      : [];
 
     const gradeMap = new Map(gradeDocs.map((g) => [String(g._id), g]));
 
     const grades = [];
-    const streams = [];
+    const subjects = [];
     const batchNumbers = [];
 
     for (const cls of classDocs) {
       const gradeDoc = gradeMap.get(String(cls.gradeId));
       if (!gradeDoc) continue;
 
+      const subjectName = getSubjectNameFromGrade(gradeDoc, cls);
+      const gradeNumber = Number(gradeDoc?.grade || 0) || null;
+
       if (cls.batchNumber) {
         batchNumbers.push(String(cls.batchNumber).trim());
       }
 
-      if (gradeDoc.flowType === "normal") {
-        const level = getLevelFromGradeDoc(gradeDoc);
+      if (gradeNumber) {
         grades.push({
-          value: String(gradeDoc.grade),
-          label: `Grade ${gradeDoc.grade}`,
-          level,
+          value: String(gradeNumber),
+          label:
+            gradeDoc.flowType === "al"
+              ? `A/L - Grade ${gradeNumber}`
+              : `Grade ${gradeNumber}`,
         });
-      } else if (gradeDoc.flowType === "al") {
-        const streamObj = (gradeDoc.streams || []).find(
-          (s) => String(s._id) === String(cls.streamId)
-        );
+      }
 
-        if (streamObj?.stream) {
-          streams.push({
-            value: streamObj.stream,
-            label: getStreamLabel(streamObj.stream),
-          });
-        }
+      if (subjectName && subjectName !== "Unknown" && gradeNumber) {
+        subjects.push({
+          grade: String(gradeNumber),
+          value: subjectName,
+          label: subjectName,
+        });
       }
     }
 
     const gradeSeen = new Set();
     const uniqueGrades = grades.filter((g) => {
-      const key = `${g.level}-${g.value}`;
+      const key = String(g.value);
       if (gradeSeen.has(key)) return false;
       gradeSeen.add(key);
       return true;
     });
 
-    const streamSeen = new Set();
-    const uniqueStreams = streams.filter((s) => {
-      const key = normalizeKey(s.value);
-      if (streamSeen.has(key)) return false;
-      streamSeen.add(key);
+    const subjectSeen = new Set();
+    const uniqueSubjects = subjects.filter((s) => {
+      const key = `${String(s.grade)}-${normalizeKey(s.value)}`;
+      if (subjectSeen.has(key)) return false;
+      subjectSeen.add(key);
       return true;
     });
 
@@ -387,16 +404,15 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
     );
 
     uniqueGrades.sort((a, b) => Number(a.value) - Number(b.value));
-    uniqueStreams.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    uniqueSubjects.sort((a, b) => {
+      const gradeDiff = Number(a.grade) - Number(b.grade);
+      if (gradeDiff !== 0) return gradeDiff;
+      return String(a.label).localeCompare(String(b.label));
+    });
 
     return res.status(200).json({
-      levels: [
-        { value: "primary", label: "Primary" },
-        { value: "secondary", label: "Secondary" },
-        { value: "al", label: "A/L" },
-      ],
       grades: uniqueGrades,
-      streams: uniqueStreams,
+      subjects: uniqueSubjects,
       batchNumbers: uniqueBatchNumbers.map((b) => ({
         value: b,
         label: `Batch ${b}`,
@@ -411,9 +427,8 @@ export const getPendingEnrollRequestOptions = async (req, res) => {
 export const getPendingEnrollRequests = async (req, res) => {
   try {
     const {
-      level = "",
       grade = "",
-      stream = "",
+      subject = "",
       phonenumber = "",
       batchNumber = "",
       page = "1",
@@ -454,24 +469,16 @@ export const getPendingEnrollRequests = async (req, res) => {
 
     let filtered = enriched;
 
-    if (level) {
-      filtered = filtered.filter(
-        (row) =>
-          String(row?.classDetails?.level || "").toLowerCase() ===
-          String(level).trim().toLowerCase()
-      );
-    }
-
     if (grade) {
       filtered = filtered.filter(
         (row) => Number(row?.classDetails?.grade || 0) === Number(grade)
       );
     }
 
-    if (stream) {
+    if (subject) {
       filtered = filtered.filter(
         (row) =>
-          normalizeKey(row?.classDetails?.stream || "") === normalizeKey(stream)
+          normalizeKey(row?.classDetails?.subject || "") === normalizeKey(subject)
       );
     }
 
@@ -484,21 +491,13 @@ export const getPendingEnrollRequests = async (req, res) => {
     }
 
     filtered.sort((a, b) => {
-      const aLevel = String(a?.classDetails?.level || "");
-      const bLevel = String(b?.classDetails?.level || "");
-      if (aLevel !== bLevel) return aLevel.localeCompare(bLevel);
-
       const aGrade = Number(a?.classDetails?.grade || 0);
       const bGrade = Number(b?.classDetails?.grade || 0);
       if (aGrade !== bGrade) return aGrade - bGrade;
 
-      const aStream = String(
-        a?.classDetails?.streamLabel || a?.classDetails?.stream || ""
-      );
-      const bStream = String(
-        b?.classDetails?.streamLabel || b?.classDetails?.stream || ""
-      );
-      if (aStream !== bStream) return aStream.localeCompare(bStream);
+      const aSubject = String(a?.classDetails?.subject || "");
+      const bSubject = String(b?.classDetails?.subject || "");
+      if (aSubject !== bSubject) return aSubject.localeCompare(bSubject);
 
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });

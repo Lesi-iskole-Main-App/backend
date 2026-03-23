@@ -8,6 +8,26 @@ const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 const clean = (v) => String(v || "").trim();
 
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
+
+const normalizeKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+const getStreamLabel = (value) => {
+  const key = normalizeKey(value);
+  return AL_STREAM_LABELS[key] || value || "";
+};
+
 const requireApprovedEnrollment = async (studentId, classId) => {
   return Enrollment.findOne({
     studentId,
@@ -34,6 +54,7 @@ const buildLessonClassDetails = async (classId) => {
       batchNumber: classDoc.batchNumber || "",
       grade: null,
       stream: "",
+      streams: [],
       subject: "",
     };
   }
@@ -49,25 +70,27 @@ const buildLessonClassDetails = async (classId) => {
       batchNumber: classDoc.batchNumber || "",
       grade: gradeDoc.grade || null,
       stream: "",
+      streams: [],
       subject: subjectObj?.subject || "",
     };
   }
 
-  const streamObj = (gradeDoc.streams || []).find(
-    (s) => String(s?._id) === String(classDoc.streamId)
-  );
+  const streamIds = Array.isArray(classDoc?.streamIds)
+    ? classDoc.streamIds.map((x) => String(x))
+    : [];
 
-  const subjectObj = (streamObj?.subjects || []).find(
-    (s) => String(s?._id) === String(classDoc.streamSubjectId)
-  );
+  const streamNames = (gradeDoc.streams || [])
+    .filter((s) => streamIds.includes(String(s?._id)))
+    .map((s) => getStreamLabel(s?.stream));
 
   return {
     classId: classDoc._id,
     className: classDoc.className || "—",
     batchNumber: classDoc.batchNumber || "",
-    grade: gradeDoc.grade || null,
-    stream: streamObj?.stream || "",
-    subject: subjectObj?.subject || "",
+    grade: 12,
+    stream: streamNames.join(", "),
+    streams: streamNames,
+    subject: classDoc.alSubjectName || "",
   };
 };
 
