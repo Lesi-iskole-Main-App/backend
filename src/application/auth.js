@@ -332,10 +332,10 @@ export const verifyCode = async (req, res) => {
       return res.status(400).json({ message: "Invalid code" });
     }
 
-    otpDoc.consumedAt = new Date();
-    await otpDoc.save();
-
     if (otpPurpose === "verify_phone") {
+      otpDoc.consumedAt = new Date();
+      await otpDoc.save();
+
       user = await User.findOne({ phonenumber: normalizedPhone });
 
       if (!user) {
@@ -352,6 +352,8 @@ export const verifyCode = async (req, res) => {
       });
     }
 
+    // ✅ For forgot password, DO NOT consume here.
+    // It will be consumed only inside forgotPasswordReset.
     return res.status(200).json({
       message: "Reset OTP verified",
       identifier: user?.phonenumber || "",
@@ -611,10 +613,8 @@ export const forgotPasswordReset = async (req, res) => {
       return res.status(400).json({ message: "Invalid code" });
     }
 
-    if (!otpDoc.consumedAt) {
-      otpDoc.consumedAt = new Date();
-      await otpDoc.save();
-    }
+    otpDoc.consumedAt = new Date();
+    await otpDoc.save();
 
     user.password = await bcrypt.hash(String(newPassword), 10);
     await user.save();
