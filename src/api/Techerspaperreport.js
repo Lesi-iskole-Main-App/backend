@@ -13,7 +13,7 @@ const router = express.Router();
  * - paperName
  * - subject
  * - grade
- * - enrollStatus
+ * - paperType
  */
 router.get(
   "/",

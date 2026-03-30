@@ -8,6 +8,7 @@ import {
   submitStudentDetails,
   forgotPasswordSendOtp,
   forgotPasswordReset,
+  getTeacherWaitingStatus,
 } from "../application/auth.js";
 
 const router = express.Router();
@@ -25,5 +26,8 @@ router.post("/whatsapp/verify-code", verifyCode);
 
 router.post("/forgot-password/send-otp", forgotPasswordSendOtp);
 router.post("/forgot-password/reset", forgotPasswordReset);
+
+// teacher waiting flow
+router.get("/teacher-waiting-status", getTeacherWaitingStatus);
 
 export default router;

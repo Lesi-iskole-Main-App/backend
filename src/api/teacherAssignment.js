@@ -1,4 +1,3 @@
-// backend/api/teacherAssignment.js
 import express from "express";
 import { authenticate } from "../api/middlewares/authentication.js";
 import { authorize } from "../api/middlewares/authrization.js";
@@ -7,7 +6,7 @@ import {
   getAllTeachers,
   getTeacherById,
   updateTeacherById,
-  deleteTeacherById, // kept in controller but NOT used here
+  deleteTeacherById,
   approveTeacher,
   getTeacherAssignFormData,
   createAssignTeacher,
@@ -21,19 +20,45 @@ router.get("/", authenticate, authorize(["admin"]), getAllTeachers);
 router.get("/:teacherId", authenticate, authorize(["admin"]), getTeacherById);
 router.patch("/:teacherId", authenticate, authorize(["admin"]), updateTeacherById);
 
-// ❌ REMOVED DELETE ROUTE (NO MORE DELETE)
+// keep delete controller if needed later, but route still removed
 // router.delete("/:teacherId", authenticate, authorize(["admin"]), deleteTeacherById);
 
-router.patch("/:teacherId/approve", authenticate, authorize(["admin"]), approveTeacher);
-router.get("/:teacherId/form-data", authenticate, authorize(["admin"]), getTeacherAssignFormData);
+router.patch(
+  "/:teacherId/approve",
+  authenticate,
+  authorize(["admin"]),
+  approveTeacher
+);
 
-// ✅ APPEND + MERGE (old behavior)
-router.post("/:teacherId/assign", authenticate, authorize(["admin"]), createAssignTeacher);
+router.get(
+  "/:teacherId/form-data",
+  authenticate,
+  authorize(["admin"]),
+  getTeacherAssignFormData
+);
 
-// ✅ REPLACE assignments (EDIT behavior)
-router.put("/:teacherId/assign", authenticate, authorize(["admin"]), replaceTeacherAssignments);
+// append classes
+router.post(
+  "/:teacherId/assign",
+  authenticate,
+  authorize(["admin"]),
+  createAssignTeacher
+);
 
-// ✅ DISABLE teacher access (soft block)
-router.patch("/:teacherId/access", authenticate, authorize(["admin"]), disableTeacherAccess);
+// replace all classes
+router.put(
+  "/:teacherId/assign",
+  authenticate,
+  authorize(["admin"]),
+  replaceTeacherAssignments
+);
+
+// enable / disable access
+router.patch(
+  "/:teacherId/access",
+  authenticate,
+  authorize(["admin"]),
+  disableTeacherAccess
+);
 
 export default router;

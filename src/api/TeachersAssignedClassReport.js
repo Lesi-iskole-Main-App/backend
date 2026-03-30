@@ -8,6 +8,13 @@ const router = express.Router();
 /**
  * GET /api/teachers-assigned-class-report
  * Teacher only
+ *
+ * query:
+ * - page
+ * - limit
+ * - className
+ * - grade
+ * - subject
  */
 router.get(
   "/",

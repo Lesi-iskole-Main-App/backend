@@ -8,11 +8,9 @@ const router = express.Router();
 /**
  * GET /api/teacher-enroll-subject/students
  * Teacher only
- * Returns students enrolled in teacher's own assigned subject + grade classes
  *
  * Query params:
- * - district
- * - town
+ * - classId
  * - studentName
  * - grade
  * - subject

@@ -11,8 +11,13 @@ const router = express.Router();
  *
  * query:
  * - paperType
- * - subject (subject name)
+ * - subject
  */
-router.get("/", authenticate, authorize(["teacher"]), getTeachersAssignedResultReport);
+router.get(
+  "/",
+  authenticate,
+  authorize(["teacher"]),
+  getTeachersAssignedResultReport
+);
 
 export default router;

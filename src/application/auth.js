@@ -7,6 +7,7 @@ import User, {
   DISTRICT_ENUMS,
 } from "../infastructure/schemas/user.js";
 import Otp from "../infastructure/schemas/otp.js";
+import ClassModel from "../infastructure/schemas/class.js";
 import { sendSMS } from "../api/sms.js";
 
 const OTP_TTL_MINUTES = 5;
@@ -29,6 +30,7 @@ const normalizeDistrict = (district) => {
 const safeUser = (u) => ({
   _id: u._id,
   name: u.name,
+  email: u.email || "",
   phonenumber: u.phonenumber,
   district: u.district,
   town: u.town,
@@ -89,6 +91,60 @@ const findUserByIdentifier = async (identifier) => {
 
   const normalizedPhone = normalizeSLPhone(raw);
   return User.findOne({ phonenumber: normalizedPhone });
+};
+
+const teacherHasAssignedClasses = async (teacherId) => {
+  const exists = await ClassModel.exists({
+    teacherIds: teacherId,
+    isActive: true,
+  });
+  return !!exists;
+};
+
+export const getTeacherWaitingStatus = async (req, res) => {
+  try {
+    const phone = String(req.query.phone || req.body?.phone || "").trim();
+
+    if (!phone) {
+      return res.status(400).json({ message: "phone is required" });
+    }
+
+    const normalizedPhone = normalizeSLPhone(phone);
+
+    const user = await User.findOne({
+      phonenumber: normalizedPhone,
+      role: "teacher",
+    }).lean();
+
+    if (!user) {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
+
+    const hasAssignedClasses =
+      user.isApproved && user.isActive
+        ? await teacherHasAssignedClasses(user._id)
+        : false;
+
+    return res.status(200).json({
+      teacher: {
+        _id: user._id,
+        name: user.name || "",
+        phonenumber: user.phonenumber || "",
+        isVerified: !!user.isVerified,
+        isApproved: !!user.isApproved,
+        isActive: !!user.isActive,
+      },
+      hasAssignedClasses,
+      canEnter:
+        !!user.isVerified &&
+        !!user.isApproved &&
+        !!user.isActive &&
+        !!hasAssignedClasses,
+    });
+  } catch (err) {
+    console.error("getTeacherWaitingStatus error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
 };
 
 export const signUp = async (req, res) => {
@@ -217,6 +273,7 @@ export const signUp = async (req, res) => {
       isVerified: false,
       verifiedAt: null,
       isApproved: role === "teacher" ? false : true,
+      isActive: true,
     });
 
     await Otp.deleteMany({
@@ -352,8 +409,6 @@ export const verifyCode = async (req, res) => {
       });
     }
 
-    // ✅ For forgot password, DO NOT consume here.
-    // It will be consumed only inside forgotPasswordReset.
     return res.status(200).json({
       message: "Reset OTP verified",
       identifier: user?.phonenumber || "",
@@ -447,6 +502,12 @@ export const signIn = async (req, res) => {
         .json({ message: "Phone not verified. Please verify OTP first." });
     }
 
+    if (!user.isActive) {
+      return res.status(403).json({
+        message: "Your account access is disabled. Please contact admin.",
+      });
+    }
+
     if (clientType === "student_app" && user.role !== "student") {
       return res.status(403).json({
         message:
@@ -454,8 +515,18 @@ export const signIn = async (req, res) => {
       });
     }
 
-    if (user.role === "teacher" && !user.isApproved) {
-      return res.status(403).json({ message: "Teacher not approved yet." });
+    if (user.role === "teacher") {
+      if (!user.isApproved) {
+        return res.status(403).json({ message: "Teacher not approved yet." });
+      }
+
+      const hasAssignedClasses = await teacherHasAssignedClasses(user._id);
+
+      if (!hasAssignedClasses) {
+        return res.status(403).json({
+          message: "Teacher has no assigned classes yet.",
+        });
+      }
     }
 
     const ok = await bcrypt.compare(String(password), user.password);

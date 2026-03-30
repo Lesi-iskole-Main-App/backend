@@ -1,5 +1,22 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import mongoose from "mongoose";
-import TeacherAssignment from "../infastructure/schemas/teacherAssignment.js";
 import ClassModel from "../infastructure/schemas/class.js";
 import Grade from "../infastructure/schemas/grade.js";
 import Paper, { PAPER_TYPES } from "../infastructure/schemas/paper.js";
@@ -10,6 +27,32 @@ const toId = (v) => String(v || "").trim();
 
 const uniqueValues = (arr = []) => {
   return [...new Set(arr.map((x) => String(x || "").trim()).filter(Boolean))];
+};
+
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
+
+const normalizeKey = (value = "") =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+const normalizeSubjectKey = (value = "") =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
+const getStreamLabel = (value = "") => {
+  const key = normalizeKey(value);
+  return AL_STREAM_LABELS[key] || value || "";
 };
 
 const getSubjectNameFromGrade = (gradeDoc, subjectId) => {
@@ -29,13 +72,54 @@ const getSubjectNameFromGrade = (gradeDoc, subjectId) => {
   return "";
 };
 
+const getPaperSubjectDisplay = (paper, gradeDoc) => {
+  if (!paper || !gradeDoc) return "";
+
+  if (gradeDoc.flowType === "normal") {
+    return getSubjectNameFromGrade(gradeDoc, paper.subjectId);
+  }
+
+  const streamDoc = (gradeDoc.streams || []).find(
+    (s) => toId(s?._id) === toId(paper.streamId)
+  );
+
+  const streamLabel = getStreamLabel(streamDoc?.stream || "");
+
+  const subjectDoc = (streamDoc?.subjects || []).find(
+    (s) => toId(s?._id) === toId(paper.streamSubjectId)
+  );
+
+  const subjectName = String(subjectDoc?.subject || "").trim();
+
+  return [streamLabel, subjectName].filter(Boolean).join(" - ");
+};
+
+const getPaperSubjectOnly = (paper, gradeDoc) => {
+  if (!paper || !gradeDoc) return "";
+
+  if (gradeDoc.flowType === "normal") {
+    return getSubjectNameFromGrade(gradeDoc, paper.subjectId);
+  }
+
+  const streamDoc = (gradeDoc.streams || []).find(
+    (s) => toId(s?._id) === toId(paper.streamId)
+  );
+
+  const subjectDoc = (streamDoc?.subjects || []).find(
+    (s) => toId(s?._id) === toId(paper.streamSubjectId)
+  );
+
+  return String(subjectDoc?.subject || "").trim();
+};
+
+const getGradeLabel = (gradeDoc) => {
+  if (!gradeDoc) return "";
+  if (gradeDoc.flowType === "al") return "A/L";
+  return `Grade ${String(gradeDoc.grade).padStart(2, "0")}`;
+};
+
 /**
- * ✅ EXACT SAME formula as src/application/rank.js
- * Returns Map(studentIdString -> islandRankNumber)
- *
- * IMPORTANT:
- * - This uses $setWindowFields (MongoDB 5.0+ required)
- * - Ranking is GLOBAL (across all students), then filtered to given studentIds
+ * same global island rank logic you already had
  */
 const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
   const ids = (studentIdStrings || [])
@@ -57,7 +141,6 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
   if (!objectIds.length) return new Map();
 
   const pipeline = [
-    // ✅ only completed attempts + only free/paid (exclude practise)
     {
       $match: {
         status: "submitted",
@@ -65,8 +148,6 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
         paymentType: { $in: ["free", "paid"] },
       },
     },
-
-    // ✅ best attempt per (studentId+paperId) by points then percentage then submittedAt
     {
       $sort: {
         studentId: 1,
@@ -83,8 +164,6 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
       },
     },
     { $replaceRoot: { newRoot: "$bestAttempt" } },
-
-    // ✅ sum per student
     {
       $group: {
         _id: "$studentId",
@@ -93,8 +172,6 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
         lastSubmittedAt: { $max: "$submittedAt" },
       },
     },
-
-    // ✅ build single numeric score
     {
       $addFields: {
         lastTime: { $toLong: { $ifNull: ["$lastSubmittedAt", new Date(0)] } },
@@ -104,17 +181,14 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
       $addFields: {
         score: {
           $add: [
-            { $multiply: ["$totalCoins", 1000000000000000] }, // 1e15
-            { $multiply: ["$totalFinishedExams", 1000000000000] }, // 1e12
+            { $multiply: ["$totalCoins", 1000000000000000] },
+            { $multiply: ["$totalFinishedExams", 1000000000000] },
             "$lastTime",
           ],
         },
       },
     },
-
     { $sort: { score: -1 } },
-
-    // ✅ dense rank
     {
       $setWindowFields: {
         sortBy: { score: -1 },
@@ -123,10 +197,7 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
         },
       },
     },
-
-    // ✅ keep only the students we need (AFTER ranking, so ranks remain global)
     { $match: { _id: { $in: objectIds } } },
-
     { $project: { studentId: { $toString: "$_id" }, rank: 1 } },
   ];
 
@@ -142,47 +213,110 @@ const buildIslandRankMapForStudents = async (studentIdStrings = []) => {
   return map;
 };
 
+const buildTeacherClassRules = (classes = [], gradeMap = new Map()) => {
+  const normalRules = [];
+  const alRules = [];
+
+  for (const cls of classes) {
+    const gradeDoc = gradeMap.get(toId(cls.gradeId));
+    if (!gradeDoc) continue;
+
+    if (gradeDoc.flowType === "normal") {
+      if (!cls.subjectId) continue;
+
+      normalRules.push({
+        gradeId: toId(cls.gradeId),
+        subjectId: toId(cls.subjectId),
+      });
+      continue;
+    }
+
+    const gradeId = toId(cls.gradeId);
+
+    if (cls.alSubjectName) {
+      const subjectKey = normalizeSubjectKey(cls.alSubjectName);
+
+      const streamIds = Array.isArray(cls.streamIds)
+        ? cls.streamIds.map((x) => toId(x))
+        : [];
+
+      const matchedStreams = (gradeDoc.streams || []).filter((s) =>
+        streamIds.includes(toId(s._id))
+      );
+
+      for (const stream of matchedStreams) {
+        const subjectDoc = (stream.subjects || []).find(
+          (s) => normalizeSubjectKey(s?.subject) === subjectKey
+        );
+
+        if (!subjectDoc) continue;
+
+        alRules.push({
+          gradeId,
+          streamId: toId(stream._id),
+          streamSubjectId: toId(subjectDoc._id),
+        });
+      }
+
+      continue;
+    }
+
+    if (cls.streamId && cls.streamSubjectId) {
+      alRules.push({
+        gradeId,
+        streamId: toId(cls.streamId),
+        streamSubjectId: toId(cls.streamSubjectId),
+      });
+    }
+  }
+
+  const seenNormal = new Set();
+  const uniqueNormalRules = normalRules.filter((r) => {
+    const key = `${r.gradeId}__${r.subjectId}`;
+    if (seenNormal.has(key)) return false;
+    seenNormal.add(key);
+    return true;
+  });
+
+  const seenAL = new Set();
+  const uniqueALRules = alRules.filter((r) => {
+    const key = `${r.gradeId}__${r.streamId}__${r.streamSubjectId}`;
+    if (seenAL.has(key)) return false;
+    seenAL.add(key);
+    return true;
+  });
+
+  return { normalRules: uniqueNormalRules, alRules: uniqueALRules };
+};
+
 export const getTeachersAssignedResultReport = async (req, res, next) => {
   try {
     const teacherId = toId(req.user?.id);
     if (!teacherId) return res.status(401).json({ message: "Unauthorized" });
 
+    const teacher = await User.findById(teacherId)
+      .select("_id role isApproved isActive")
+      .lean();
+
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(403).json({ message: "Teacher access only" });
+    }
+
+    if (teacher.isApproved === false) {
+      return res.status(403).json({ message: "Teacher not approved yet" });
+    }
+
+    if (teacher.isActive === false) {
+      return res.status(403).json({ message: "Teacher account disabled" });
+    }
+
     const queryPaperType = String(req.query?.paperType || "Daily Quiz").trim();
-    const querySubject = String(req.query?.subject || "").trim();
+    const querySubject = String(req.query?.subject || "").trim().toLowerCase();
 
-    // 1) teacher assignment
-    const teacherAssignment = await TeacherAssignment.findOne({ teacherId }).lean();
-
-    if (!teacherAssignment) {
-      return res.status(200).json({
-        message: "No teacher assignment found",
-        total: 0,
-        filters: { paperTypes: PAPER_TYPES, subjects: [] },
-        reports: [],
-      });
-    }
-
-    const assignments = Array.isArray(teacherAssignment.assignments)
-      ? teacherAssignment.assignments
-      : [];
-
-    const allowedGradeIds = uniqueValues(assignments.map((a) => a?.gradeId));
-    const allowedSubjectIds = uniqueValues(assignments.flatMap((a) => a?.subjectIds || []));
-
-    if (!allowedGradeIds.length || !allowedSubjectIds.length) {
-      return res.status(200).json({
-        message: "No assigned grade or subject found",
-        total: 0,
-        filters: { paperTypes: PAPER_TYPES, subjects: [] },
-        reports: [],
-      });
-    }
-
-    // 2) teacher classes
+    // ✅ IMPORTANT:
+    // Teacher web should use directly assigned classes from class.teacherIds
     const teacherClasses = await ClassModel.find({
       teacherIds: teacherId,
-      gradeId: { $in: allowedGradeIds },
-      subjectId: { $in: allowedSubjectIds },
       isActive: true,
     }).lean();
 
@@ -195,28 +329,61 @@ export const getTeachersAssignedResultReport = async (req, res, next) => {
       });
     }
 
-    // 3) grade docs
+    const gradeIds = uniqueValues(teacherClasses.map((c) => c?.gradeId));
     const gradeDocs = await Grade.find({
-      _id: { $in: uniqueValues(teacherClasses.map((c) => c?.gradeId)) },
+      _id: { $in: gradeIds },
+      isActive: true,
     }).lean();
 
     const gradeMap = new Map(gradeDocs.map((g) => [toId(g._id), g]));
 
-    // 4) papers for assigned grade+subject, paperType filter
+    const { normalRules, alRules } = buildTeacherClassRules(teacherClasses, gradeMap);
+
+    if (!normalRules.length && !alRules.length) {
+      return res.status(200).json({
+        message: "No valid class subject relations found for teacher",
+        total: 0,
+        filters: { paperTypes: PAPER_TYPES, subjects: [] },
+        reports: [],
+      });
+    }
+
+    const paperOr = [];
+
+    for (const rule of normalRules) {
+      paperOr.push({
+        gradeId: rule.gradeId,
+        subjectId: rule.subjectId,
+        isActive: true,
+      });
+    }
+
+    for (const rule of alRules) {
+      paperOr.push({
+        gradeId: rule.gradeId,
+        streamId: rule.streamId,
+        streamSubjectId: rule.streamSubjectId,
+        isActive: true,
+      });
+    }
+
     const paperFilter = {
-      gradeId: { $in: allowedGradeIds },
-      subjectId: { $in: allowedSubjectIds },
-      isActive: true,
+      $or: paperOr,
     };
-    if (queryPaperType) paperFilter.paperType = queryPaperType;
+
+    if (queryPaperType) {
+      paperFilter.paperType = queryPaperType;
+    }
 
     const papers = await Paper.find(paperFilter).lean();
 
     const subjectOptions = uniqueValues(
-      papers.map((p) => {
-        const g = gradeMap.get(toId(p.gradeId));
-        return getSubjectNameFromGrade(g, p.subjectId);
-      })
+      papers
+        .map((p) => {
+          const g = gradeMap.get(toId(p.gradeId));
+          return getPaperSubjectDisplay(p, g);
+        })
+        .filter(Boolean)
     ).sort((a, b) => a.localeCompare(b));
 
     if (!papers.length) {
@@ -228,20 +395,22 @@ export const getTeachersAssignedResultReport = async (req, res, next) => {
       });
     }
 
-    // 5) filter papers by subject NAME
-    let paperIds = papers.map((p) => toId(p._id));
+    let filteredPapers = papers;
+
     if (querySubject) {
-      const key = querySubject.toLowerCase();
-      paperIds = papers
-        .filter((p) => {
-          const g = gradeMap.get(toId(p.gradeId));
-          const sName = getSubjectNameFromGrade(g, p.subjectId);
-          return String(sName || "").trim().toLowerCase() === key;
-        })
-        .map((p) => toId(p._id));
+      filteredPapers = papers.filter((p) => {
+        const g = gradeMap.get(toId(p.gradeId));
+        const subjectDisplay = String(getPaperSubjectDisplay(p, g) || "").trim().toLowerCase();
+        const subjectOnly = String(getPaperSubjectOnly(p, g) || "").trim().toLowerCase();
+
+        return (
+          subjectDisplay === querySubject ||
+          subjectOnly === querySubject
+        );
+      });
     }
 
-    if (!paperIds.length) {
+    if (!filteredPapers.length) {
       return res.status(200).json({
         message: "No results found",
         total: 0,
@@ -250,10 +419,12 @@ export const getTeachersAssignedResultReport = async (req, res, next) => {
       });
     }
 
-    // 6) attempts for those papers (for building modal breakdown)
+    const paperIds = filteredPapers.map((p) => toId(p._id));
+
     const attempts = await PaperAttempt.find({
       paperId: { $in: paperIds },
       status: "submitted",
+      submittedAt: { $ne: null },
     }).lean();
 
     if (!attempts.length) {
@@ -265,41 +436,36 @@ export const getTeachersAssignedResultReport = async (req, res, next) => {
       });
     }
 
-    // 7) student names (only for those attempts)
     const studentIds = uniqueValues(attempts.map((a) => a.studentId));
     const students = await User.find({ _id: { $in: studentIds } })
       .select("_id name")
       .lean();
-    const studentMap = new Map(students.map((s) => [toId(s._id), String(s.name || "").trim()]));
 
-    // ✅ 8) GLOBAL Island Rank using YOUR formula
+    const studentMap = new Map(
+      students.map((s) => [toId(s._id), String(s.name || "").trim()])
+    );
+
     let islandRankMap = new Map();
     try {
       islandRankMap = await buildIslandRankMapForStudents(studentIds);
     } catch (err) {
-      // If MongoDB < 5.0, it will fail. Keep rank "-" but don’t crash.
       console.error("Island rank aggregate failed:", err?.message || err);
       islandRankMap = new Map();
     }
 
-    // 9) paper map
-    const paperMap = new Map(papers.map((p) => [toId(p._id), p]));
+    const filteredPaperMap = new Map(filteredPapers.map((p) => [toId(p._id), p]));
 
-    // 10) build rows by student
     const byStudent = new Map();
 
-    for (const a of attempts) {
-      const paperId = toId(a.paperId);
-      const studentId = toId(a.studentId);
-
-      const paper = paperMap.get(paperId);
+    for (const attempt of attempts) {
+      const paper = filteredPaperMap.get(toId(attempt.paperId));
       if (!paper) continue;
 
+      const studentId = toId(attempt.studentId);
       const gradeDoc = gradeMap.get(toId(paper.gradeId));
-      const gradeNumber = Number(gradeDoc?.grade || 0);
-      const gradeLabel = gradeNumber ? `Grade ${String(gradeNumber).padStart(2, "0")}` : "-";
-      const subjectName = getSubjectNameFromGrade(gradeDoc, paper.subjectId) || "-";
 
+      const gradeLabel = getGradeLabel(gradeDoc) || "-";
+      const subjectName = getPaperSubjectDisplay(paper, gradeDoc) || "-";
       const studentName = studentMap.get(studentId) || "-";
       const islandRank = islandRankMap.get(studentId) || 0;
 
@@ -310,17 +476,16 @@ export const getTeachersAssignedResultReport = async (req, res, next) => {
           grade: gradeLabel,
           subject: subjectName,
           paperType: String(paper.paperType || "").trim(),
-          islandRank: islandRank ? Number(islandRank) : "-", // ✅ MAIN TABLE rank
+          islandRank: islandRank ? Number(islandRank) : "-",
           resultBreakdown: [],
         });
       }
 
-      // modal breakdown (no island rank in modal)
       byStudent.get(studentId).resultBreakdown.push({
         title: String(paper.paperTitle || "").trim() || "Paper",
-        correctAnswers: Number(a.correctCount || 0),
-        marks: Number(a.totalPointsEarned || 0),
-        progress: `${Number(a.percentage || 0).toFixed(0)}%`,
+        correctAnswers: Number(attempt.correctCount || 0),
+        marks: Number(attempt.totalPointsEarned || 0),
+        progress: `${Number(attempt.percentage || 0).toFixed(0)}%`,
       });
     }
 
@@ -340,7 +505,6 @@ export const getTeachersAssignedResultReport = async (req, res, next) => {
   } catch (err) {
     console.error("getTeachersAssignedResultReport error:", err);
 
-    // match your rank.js helpful message
     if (String(err?.message || "").includes("$setWindowFields")) {
       return res.status(500).json({
         message:

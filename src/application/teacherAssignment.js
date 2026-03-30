@@ -1,166 +1,190 @@
-// backend/application/teacherAssignment.js
 import mongoose from "mongoose";
 import User from "../infastructure/schemas/user.js";
-import Grade from "../infastructure/schemas/grade.js";
-import TeacherAssignment from "../infastructure/schemas/teacherAssignment.js";
+import ClassModel from "../infastructure/schemas/class.js";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
-const str = (v) => String(v || "");
-const is12or13 = (g) => g === 12 || g === 13;
-const is1to11 = (g) => g >= 1 && g <= 11;
+
+const AL_STREAM_LABELS = {
+  physical_science: "Physical Science",
+  biological_science: "Biological Science",
+  commerce: "Commerce",
+  arts: "Arts",
+  technology: "Technology",
+  common: "Common",
+};
+
+const getStreamLabel = (value = "") => {
+  const key = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  return AL_STREAM_LABELS[key] || value || "";
+};
 
 const safeTeacher = (u) => ({
   _id: u._id,
-  name: u.name,
-  email: u.email,
-  whatsapp: u.phonenumber,
+  name: u.name || "",
+  email: u.email || "",
+  whatsapp: u.phonenumber || "",
+  phonenumber: u.phonenumber || "",
   role: u.role,
   isVerified: u.isVerified,
   isApproved: u.isApproved,
   approvedAt: u.approvedAt,
   approvedBy: u.approvedBy,
-  isActive: u.isActive, // ✅ add
+  isActive: u.isActive,
   createdAt: u.createdAt,
   updatedAt: u.updatedAt,
-  password: null,
 });
 
-// ✅ Merge by gradeId + streamId, union subjectIds
-const mergeAssignments = (assignments = []) => {
+const buildClassSummary = (doc) => {
+  const grade = doc?.gradeId;
+
+  if (!grade) {
+    return {
+      _id: doc?._id,
+      className: doc?.className || "",
+      batchNumber: doc?.batchNumber || "",
+      grade: null,
+      gradeLabel: "",
+      stream: "",
+      streamNames: [],
+      subjectName: "",
+      isActive: !!doc?.isActive,
+      teacherCount: Array.isArray(doc?.teacherIds) ? doc.teacherIds.length : 0,
+      createdAt: doc?.createdAt,
+      updatedAt: doc?.updatedAt,
+    };
+  }
+
+  if (grade.flowType === "normal") {
+    const subjectObj = (grade.subjects || []).find(
+      (s) => String(s._id) === String(doc.subjectId)
+    );
+
+    return {
+      _id: doc._id,
+      className: doc.className || "",
+      batchNumber: doc.batchNumber || "",
+      grade: grade.grade,
+      gradeLabel: `Grade ${grade.grade}`,
+      stream: "",
+      streamNames: [],
+      subjectName: subjectObj?.subject || "",
+      isActive: !!doc.isActive,
+      teacherCount: Array.isArray(doc.teacherIds) ? doc.teacherIds.length : 0,
+      createdAt: doc.createdAt,
+      updatedAt: doc.updatedAt,
+    };
+  }
+
+  const streamIds = Array.isArray(doc?.streamIds)
+    ? doc.streamIds.map((x) => String(x))
+    : [];
+
+  const streamNames = (grade.streams || [])
+    .filter((s) => streamIds.includes(String(s._id)))
+    .map((s) => getStreamLabel(s?.stream));
+
+  return {
+    _id: doc._id,
+    className: doc.className || "",
+    batchNumber: doc.batchNumber || "",
+    grade: 12,
+    gradeLabel: "A/L",
+    stream: streamNames.join(", "),
+    streamNames,
+    subjectName: doc.alSubjectName || "",
+    isActive: !!doc.isActive,
+    teacherCount: Array.isArray(doc.teacherIds) ? doc.teacherIds.length : 0,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+};
+
+const buildReadableAssignmentsFromClasses = (classes = []) => {
   const map = new Map();
 
-  for (const a of assignments) {
-    const gradeId = a?.gradeId ? String(a.gradeId) : "";
-    const streamId = a?.streamId ? String(a.streamId) : "null";
-    const key = `${gradeId}__${streamId}`;
+  for (const cls of classes) {
+    const gradeLabel = cls.gradeLabel || "";
+    const stream = cls.stream || "";
+    const key = `${gradeLabel}__${stream}`;
 
     if (!map.has(key)) {
       map.set(key, {
-        gradeId: a.gradeId,
-        streamId: a.streamId || null,
-        subjectIds: [],
+        grade: cls.grade || null,
+        gradeLabel,
+        stream,
+        subjects: [],
+        classes: [],
       });
     }
 
-    const cur = map.get(key);
-    const curSet = new Set((cur.subjectIds || []).map((x) => String(x)));
-    const incoming = Array.isArray(a.subjectIds) ? a.subjectIds : [];
+    const bucket = map.get(key);
 
-    for (const sid of incoming) curSet.add(String(sid));
-    cur.subjectIds = Array.from(curSet);
+    if (
+      cls.subjectName &&
+      !bucket.subjects.some(
+        (s) => String(s.subject || "").trim() === String(cls.subjectName).trim()
+      )
+    ) {
+      bucket.subjects.push({
+        subject: cls.subjectName,
+      });
+    }
 
-    map.set(key, cur);
+    bucket.classes.push({
+      _id: cls._id,
+      className: cls.className,
+      batchNumber: cls.batchNumber,
+      subjectName: cls.subjectName,
+      gradeLabel: cls.gradeLabel,
+      stream: cls.stream,
+    });
+
+    map.set(key, bucket);
   }
 
-  return Array.from(map.values()).map((x) => ({
-    gradeId: x.gradeId,
-    streamId: x.streamId || null,
-    subjectIds: x.subjectIds,
-  }));
+  return Array.from(map.values()).sort((a, b) => {
+    const ag = Number(a.grade || 0);
+    const bg = Number(b.grade || 0);
+    if (ag !== bg) return ag - bg;
+    return String(a.stream || "").localeCompare(String(b.stream || ""));
+  });
 };
 
-const validateAssignments = async (assignments = []) => {
-  for (const a of assignments) {
-    if (!a.gradeId || !Array.isArray(a.subjectIds) || a.subjectIds.length === 0) {
-      return { ok: false, message: "Each assignment must have gradeId and subjectIds[]" };
+const getAssignedClassesForTeacher = async (teacherId) => {
+  const list = await ClassModel.find({ teacherIds: teacherId })
+    .populate("gradeId", "grade flowType title subjects streams")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return list.map(buildClassSummary);
+};
+
+const getAvailableClasses = async () => {
+  const list = await ClassModel.find({ isActive: true })
+    .populate("gradeId", "grade flowType title subjects streams")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return list.map(buildClassSummary);
+};
+
+const validateClassIds = async (classIds = []) => {
+  for (const classId of classIds) {
+    if (!isValidId(classId)) {
+      return { ok: false, message: `Invalid classId: ${classId}` };
     }
-    if (!isValidId(a.gradeId)) return { ok: false, message: `Invalid gradeId: ${a.gradeId}` };
 
-    const grade = await Grade.findById(a.gradeId).lean();
-    if (!grade) return { ok: false, message: `Grade not found: ${a.gradeId}` };
-
-    // Grade 1-11
-    if (is1to11(grade.grade)) {
-      if (a.streamId) return { ok: false, message: `Grade ${grade.grade} must not use streamId` };
-
-      const validSubjectIds = new Set((grade.subjects || []).map((s) => String(s._id)));
-      for (const sid of a.subjectIds) {
-        if (!isValidId(sid)) return { ok: false, message: `Invalid subjectId: ${sid}` };
-        if (!validSubjectIds.has(String(sid))) {
-          return { ok: false, message: `SubjectId ${sid} does not belong to grade ${grade.grade}` };
-        }
-      }
-    }
-
-    // Grade 12-13
-    if (is12or13(grade.grade)) {
-      if (!a.streamId) return { ok: false, message: `Grade ${grade.grade} requires streamId` };
-      if (!isValidId(a.streamId)) return { ok: false, message: `Invalid streamId: ${a.streamId}` };
-
-      const st = (grade.streams || []).find((x) => String(x._id) === String(a.streamId));
-      if (!st) {
-        return { ok: false, message: `StreamId ${a.streamId} does not belong to grade ${grade.grade}` };
-      }
-
-      const validStreamSubjectIds = new Set((st.subjects || []).map((s) => String(s._id)));
-      for (const sid of a.subjectIds) {
-        if (!isValidId(sid)) return { ok: false, message: `Invalid subjectId: ${sid}` };
-        if (!validStreamSubjectIds.has(String(sid))) {
-          return { ok: false, message: `SubjectId ${sid} does not belong to stream ${st.stream}` };
-        }
-      }
+    const cls = await ClassModel.findById(classId).lean();
+    if (!cls) {
+      return { ok: false, message: `Class not found: ${classId}` };
     }
   }
 
   return { ok: true };
 };
 
-const buildReadableAssignments = async (assignmentDoc) => {
-  if (!assignmentDoc?.assignments?.length) return [];
-
-  const merged = mergeAssignments(assignmentDoc.assignments);
-
-  const readable = [];
-  for (const a of merged) {
-    const grade = await Grade.findById(a.gradeId).lean();
-    if (!grade) continue;
-
-    // Grade 1-11
-    if (is1to11(grade.grade)) {
-      const map = new Map((grade.subjects || []).map((s) => [String(s._id), s.subject]));
-
-      readable.push({
-        gradeId: grade._id,
-        grade: grade.grade,
-        streamId: null,
-        stream: null,
-        subjects: (a.subjectIds || []).map((sid) => ({
-          _id: sid,
-          subject: map.get(String(sid)) || "Unknown",
-        })),
-      });
-      continue;
-    }
-
-    // Grade 12-13
-    if (is12or13(grade.grade)) {
-      const st = (grade.streams || []).find((x) => String(x._id) === String(a.streamId));
-      const map = new Map((st?.subjects || []).map((s) => [String(s._id), s.subject]));
-
-      readable.push({
-        gradeId: grade._id,
-        grade: grade.grade,
-        streamId: a.streamId,
-        stream: st?.stream || "Unknown Stream",
-        subjects: (a.subjectIds || []).map((sid) => ({
-          _id: sid,
-          subject: map.get(String(sid)) || "Unknown",
-        })),
-      });
-    }
-  }
-
-  readable.sort((x, y) => {
-    const g = (x.grade || 0) - (y.grade || 0);
-    if (g !== 0) return g;
-    return String(x.stream || "").localeCompare(String(y.stream || ""));
-  });
-
-  return readable;
-};
-
 // =======================================================
-// 1) GET TEACHERS LIST
+// GET TEACHERS
 // =======================================================
 export const getAllTeachers = async (req, res) => {
   try {
@@ -170,8 +194,11 @@ export const getAllTeachers = async (req, res) => {
     if (status === "pending") filter.isApproved = false;
     if (status === "approved") filter.isApproved = true;
 
-    const teachers = await User.find(filter).sort({ createdAt: -1 });
-    return res.status(200).json({ teachers: teachers.map(safeTeacher) });
+    const teachers = await User.find(filter).sort({ createdAt: -1 }).lean();
+
+    return res.status(200).json({
+      teachers: teachers.map(safeTeacher),
+    });
   } catch (err) {
     console.error("getAllTeachers error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -179,22 +206,29 @@ export const getAllTeachers = async (req, res) => {
 };
 
 // =======================================================
-// 2) GET TEACHER BY ID
+// GET TEACHER BY ID
 // =======================================================
 export const getTeacherById = async (req, res) => {
   try {
     const { teacherId } = req.params;
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
 
-    const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
 
-    const assignment = await TeacherAssignment.findOne({ teacherId }).lean();
-    const readableAssignments = await buildReadableAssignments(assignment);
+    const teacher = await User.findById(teacherId).lean();
+
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
+
+    const assignedClasses = await getAssignedClassesForTeacher(teacherId);
+    const readableAssignments =
+      buildReadableAssignmentsFromClasses(assignedClasses);
 
     return res.status(200).json({
       teacher: safeTeacher(teacher),
-      assignment: assignment || null,
+      assignedClasses,
       readableAssignments,
     });
   } catch (err) {
@@ -204,30 +238,38 @@ export const getTeacherById = async (req, res) => {
 };
 
 // =======================================================
-// 3) UPDATE TEACHER BY ID
+// UPDATE TEACHER BASIC INFO
 // =======================================================
 export const updateTeacherById = async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { name, email, whatsapp, isApproved } = req.body || {};
 
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
 
     const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
 
-    if (name !== undefined) teacher.name = str(name).trim();
-    if (email !== undefined) teacher.email = str(email).trim().toLowerCase();
-    if (whatsapp !== undefined) teacher.phonenumber = str(whatsapp).trim();
+    if (name !== undefined) teacher.name = String(name || "").trim();
+    if (email !== undefined) teacher.email = String(email || "").trim();
+    if (whatsapp !== undefined) teacher.phonenumber = String(whatsapp || "").trim();
 
-    if (isApproved !== undefined) {
-      teacher.isApproved = Boolean(isApproved);
-      teacher.approvedAt = teacher.isApproved ? new Date() : null;
-      teacher.approvedBy = teacher.isApproved ? (req.user?.id || null) : null;
+    if (typeof isApproved === "boolean") {
+      teacher.isApproved = isApproved;
+      teacher.approvedAt = isApproved ? new Date() : null;
+      teacher.approvedBy = isApproved ? req.user?.id || null : null;
     }
 
     await teacher.save();
-    return res.status(200).json({ message: "Teacher updated", teacher: safeTeacher(teacher) });
+
+    return res.status(200).json({
+      message: "Teacher updated",
+      teacher: safeTeacher(teacher),
+    });
   } catch (err) {
     console.error("updateTeacherById error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -235,20 +277,31 @@ export const updateTeacherById = async (req, res) => {
 };
 
 // =======================================================
-// 4) DELETE TEACHER BY ID  (KEEP FILE, BUT YOU WILL REMOVE ROUTE/BTN)
+// DELETE TEACHER (KEEP IF NEEDED LATER, ROUTE NOT USED)
 // =======================================================
 export const deleteTeacherById = async (req, res) => {
   try {
     const { teacherId } = req.params;
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
+
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
 
     const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
 
-    await TeacherAssignment.deleteOne({ teacherId });
+    await ClassModel.updateMany(
+      { teacherIds: teacherId },
+      { $pull: { teacherIds: teacherId } }
+    );
+
     await User.findByIdAndDelete(teacherId);
 
-    return res.status(200).json({ message: "Teacher deleted (and assignments removed)" });
+    return res.status(200).json({
+      message: "Teacher deleted and removed from classes",
+    });
   } catch (err) {
     console.error("deleteTeacherById error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -256,15 +309,18 @@ export const deleteTeacherById = async (req, res) => {
 };
 
 // =======================================================
-// 5) APPROVE TEACHER
+// APPROVE / UNAPPROVE
 // =======================================================
 export const approveTeacher = async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { isApproved } = req.body || {};
 
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
-    if (isApproved === undefined) {
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
+
+    if (typeof isApproved !== "boolean") {
       return res.status(400).json({
         message: "isApproved is required",
         example: { isApproved: true },
@@ -272,14 +328,20 @@ export const approveTeacher = async (req, res) => {
     }
 
     const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
 
-    teacher.isApproved = Boolean(isApproved);
-    teacher.approvedAt = teacher.isApproved ? new Date() : null;
-    teacher.approvedBy = teacher.isApproved ? (req.user?.id || null) : null;
+    teacher.isApproved = isApproved;
+    teacher.approvedAt = isApproved ? new Date() : null;
+    teacher.approvedBy = isApproved ? req.user?.id || null : null;
 
     await teacher.save();
-    return res.status(200).json({ message: "Teacher approval updated", teacher: safeTeacher(teacher) });
+
+    return res.status(200).json({
+      message: "Teacher approval updated",
+      teacher: safeTeacher(teacher),
+    });
   } catch (err) {
     console.error("approveTeacher error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -287,28 +349,30 @@ export const approveTeacher = async (req, res) => {
 };
 
 // =======================================================
-// 6) FORM DATA
+// FORM DATA FOR ASSIGNMENT PAGE
 // =======================================================
 export const getTeacherAssignFormData = async (req, res) => {
   try {
     const { teacherId } = req.params;
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
 
-    const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
 
-    const availableGrades = await Grade.find({ isActive: true })
-      .select("grade subjects streams isActive")
-      .sort({ grade: 1 })
-      .lean();
+    const teacher = await User.findById(teacherId).lean();
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
 
-    const assignment = await TeacherAssignment.findOne({ teacherId }).lean();
-    const readableAssignments = await buildReadableAssignments(assignment);
+    const availableClasses = await getAvailableClasses();
+    const assignedClasses = await getAssignedClassesForTeacher(teacherId);
+    const readableAssignments =
+      buildReadableAssignmentsFromClasses(assignedClasses);
 
     return res.status(200).json({
       teacher: safeTeacher(teacher),
-      availableGrades,
-      assignment: assignment || null,
+      availableClasses,
+      assignedClasses,
       readableAssignments,
     });
   } catch (err) {
@@ -318,43 +382,50 @@ export const getTeacherAssignFormData = async (req, res) => {
 };
 
 // =======================================================
-// 7) CREATE/UPDATE ASSIGNMENTS (APPEND + MERGE)  ✅ KEEP
+// APPEND CLASSES TO TEACHER
 // =======================================================
 export const createAssignTeacher = async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { assignments } = req.body || {};
+    const { classIds } = req.body || {};
 
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
-    if (!Array.isArray(assignments) || assignments.length === 0) {
-      return res.status(400).json({ message: "assignments array is required" });
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
+
+    if (!Array.isArray(classIds) || classIds.length === 0) {
+      return res.status(400).json({ message: "classIds array is required" });
     }
 
     const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
-    if (!teacher.isApproved) return res.status(403).json({ message: "Teacher must be approved before assigning" });
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
 
-    const check = await validateAssignments(assignments);
-    if (!check.ok) return res.status(400).json({ message: check.message });
+    if (!teacher.isApproved) {
+      return res.status(403).json({
+        message: "Teacher must be approved before assigning classes",
+      });
+    }
 
-    const existing = await TeacherAssignment.findOne({ teacherId }).lean();
-    const existingAssignments = existing?.assignments || [];
+    const check = await validateClassIds(classIds);
+    if (!check.ok) {
+      return res.status(400).json({ message: check.message });
+    }
 
-    const combined = [...existingAssignments, ...assignments];
-    const mergedAssignments = mergeAssignments(combined);
+    await ClassModel.updateMany(
+      { _id: { $in: classIds } },
+      { $addToSet: { teacherIds: teacher._id } }
+    );
 
-    const saved = await TeacherAssignment.findOneAndUpdate(
-      { teacherId },
-      { teacherId, assignments: mergedAssignments, assignedBy: req.user?.id || null },
-      { new: true, upsert: true }
-    ).lean();
-
-    const readableAssignments = await buildReadableAssignments(saved);
+    const assignedClasses = await getAssignedClassesForTeacher(teacherId);
+    const readableAssignments =
+      buildReadableAssignmentsFromClasses(assignedClasses);
 
     return res.status(200).json({
-      message: "Teacher assignment saved",
+      message: "Teacher classes assigned successfully",
       teacher: safeTeacher(teacher),
-      assignment: saved,
+      assignedClasses,
       readableAssignments,
     });
   } catch (err) {
@@ -364,43 +435,59 @@ export const createAssignTeacher = async (req, res) => {
 };
 
 // =======================================================
-// ✅ 8) REPLACE ASSIGNMENTS (FOR EDIT)
-// This will REMOVE old subjects/grades and set only new ones
+// REPLACE ALL CLASSES FOR TEACHER (EDIT MODE)
 // =======================================================
 export const replaceTeacherAssignments = async (req, res) => {
   try {
     const { teacherId } = req.params;
-    const { assignments } = req.body || {};
+    const { classIds } = req.body || {};
 
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
-    if (!Array.isArray(assignments)) {
-      return res.status(400).json({ message: "assignments array is required" });
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
+
+    if (!Array.isArray(classIds)) {
+      return res.status(400).json({ message: "classIds array is required" });
     }
 
     const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
-    if (!teacher.isApproved) return res.status(403).json({ message: "Teacher must be approved before assigning" });
-
-    // allow empty => clears assignments
-    if (assignments.length > 0) {
-      const check = await validateAssignments(assignments);
-      if (!check.ok) return res.status(400).json({ message: check.message });
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
     }
 
-    const mergedAssignments = mergeAssignments(assignments);
+    if (!teacher.isApproved) {
+      return res.status(403).json({
+        message: "Teacher must be approved before assigning classes",
+      });
+    }
 
-    const saved = await TeacherAssignment.findOneAndUpdate(
-      { teacherId },
-      { teacherId, assignments: mergedAssignments, assignedBy: req.user?.id || null },
-      { new: true, upsert: true }
-    ).lean();
+    const check = await validateClassIds(classIds);
+    if (!check.ok) {
+      return res.status(400).json({ message: check.message });
+    }
 
-    const readableAssignments = await buildReadableAssignments(saved);
+    const nextIds = classIds.map((x) => new mongoose.Types.ObjectId(String(x)));
+
+    await ClassModel.updateMany(
+      { teacherIds: teacher._id, _id: { $nin: nextIds } },
+      { $pull: { teacherIds: teacher._id } }
+    );
+
+    if (nextIds.length > 0) {
+      await ClassModel.updateMany(
+        { _id: { $in: nextIds } },
+        { $addToSet: { teacherIds: teacher._id } }
+      );
+    }
+
+    const assignedClasses = await getAssignedClassesForTeacher(teacherId);
+    const readableAssignments =
+      buildReadableAssignmentsFromClasses(assignedClasses);
 
     return res.status(200).json({
-      message: "Teacher assignments replaced",
+      message: "Teacher class assignments updated successfully",
       teacher: safeTeacher(teacher),
-      assignment: saved,
+      assignedClasses,
       readableAssignments,
     });
   } catch (err) {
@@ -410,25 +497,36 @@ export const replaceTeacherAssignments = async (req, res) => {
 };
 
 // =======================================================
-// ✅ 9) DISABLE TEACHER ACCESS (NO DELETE)
+// ENABLE / DISABLE TEACHER ACCESS
 // =======================================================
 export const disableTeacherAccess = async (req, res) => {
   try {
     const { teacherId } = req.params;
     const { isActive } = req.body || {};
 
-    if (!isValidId(teacherId)) return res.status(400).json({ message: "Invalid teacherId" });
+    if (!isValidId(teacherId)) {
+      return res.status(400).json({ message: "Invalid teacherId" });
+    }
+
     if (typeof isActive !== "boolean") {
-      return res.status(400).json({ message: "isActive must be boolean", example: { isActive: false } });
+      return res.status(400).json({
+        message: "isActive must be boolean",
+        example: { isActive: false },
+      });
     }
 
     const teacher = await User.findById(teacherId);
-    if (!teacher || teacher.role !== "teacher") return res.status(404).json({ message: "Teacher not found" });
+    if (!teacher || teacher.role !== "teacher") {
+      return res.status(404).json({ message: "Teacher not found" });
+    }
 
     teacher.isActive = isActive;
     await teacher.save();
 
-    return res.status(200).json({ message: "Teacher access updated", teacher: safeTeacher(teacher) });
+    return res.status(200).json({
+      message: "Teacher access updated",
+      teacher: safeTeacher(teacher),
+    });
   } catch (err) {
     console.error("disableTeacherAccess error:", err);
     return res.status(500).json({ message: "Internal server error" });
