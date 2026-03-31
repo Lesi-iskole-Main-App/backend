@@ -3,6 +3,8 @@ import Grade from "../infastructure/schemas/grade.js";
 import User from "../infastructure/schemas/user.js";
 import Lesson from "../infastructure/schemas/lesson.js";
 import Live from "../infastructure/schemas/live.js";
+import Recording from "../infastructure/schemas/recording.js";
+import Enrollment from "../infastructure/schemas/enrollment.js";
 
 const toId = (v) => String(v || "").trim();
 
@@ -64,11 +66,11 @@ const getALSubjectDisplay = (gradeDoc, classDoc) => {
   }
 
   if (classDoc.alSubjectName) {
-    const streamNames = Array.isArray(classDoc.streamIds)
-      ? (gradeDoc.streams || [])
-          .filter((s) => classDoc.streamIds.map((x) => toId(x)).includes(toId(s._id)))
-          .map((s) => getStreamLabel(s.stream))
-      : [];
+    const streamIdSet = new Set((classDoc.streamIds || []).map((x) => toId(x)));
+
+    const streamNames = (gradeDoc.streams || [])
+      .filter((s) => streamIdSet.has(toId(s._id)))
+      .map((s) => getStreamLabel(s.stream));
 
     if (streamNames.length) {
       return `${streamNames.join(", ")} - ${String(classDoc.alSubjectName || "").trim()}`;
@@ -83,6 +85,7 @@ const getALSubjectDisplay = (gradeDoc, classDoc) => {
 export const getTeachersAssignedClassReport = async (req, res, next) => {
   try {
     const teacherId = toId(req.user?.id);
+
     if (!teacherId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -122,6 +125,14 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
         total: 0,
         page,
         limit,
+        pagination: {
+          page,
+          limit,
+          total: 0,
+          totalPages: 1,
+          hasNextPage: false,
+          hasPrevPage: false,
+        },
         filters: {
           grades: [],
           subjects: [],
@@ -141,11 +152,46 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
 
     const classIds = teacherClasses.map((c) => c._id);
 
-    const [lessonCountsRaw, liveCountsRaw] = await Promise.all([
+    const [
+      enrollmentCountsRaw,
+      lessonCountsRaw,
+      recordingCountsRaw,
+      liveCountsRaw,
+    ] = await Promise.all([
+      Enrollment.aggregate([
+        {
+          $match: {
+            classId: { $in: classIds },
+            status: "approved",
+            isActive: true,
+          },
+        },
+        {
+          $group: {
+            _id: "$classId",
+            count: { $sum: 1 },
+          },
+        },
+      ]),
       Lesson.aggregate([
         {
           $match: {
             classId: { $in: classIds },
+            isActive: true,
+          },
+        },
+        {
+          $group: {
+            _id: "$classId",
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      Recording.aggregate([
+        {
+          $match: {
+            classId: { $in: classIds },
+            isActive: true,
           },
         },
         {
@@ -159,6 +205,7 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
         {
           $match: {
             classId: { $in: classIds },
+            isActive: true,
           },
         },
         {
@@ -170,8 +217,16 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
       ]),
     ]);
 
+    const enrollmentCountMap = new Map(
+      (enrollmentCountsRaw || []).map((x) => [toId(x._id), Number(x.count || 0)])
+    );
+
     const lessonCountMap = new Map(
       (lessonCountsRaw || []).map((x) => [toId(x._id), Number(x.count || 0)])
+    );
+
+    const recordingCountMap = new Map(
+      (recordingCountsRaw || []).map((x) => [toId(x._id), Number(x.count || 0)])
     );
 
     const liveCountMap = new Map(
@@ -213,12 +268,14 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
       return {
         id: toId(cls._id),
         className: String(cls.className || "").trim() || "-",
+        batchNumber: String(cls.batchNumber || "").trim() || "",
         grade: gradeLabel,
         subject: subjectLabel,
-        enrollStudentCount: Number(cls.enrollStudentCount || 0),
-        createdAt: cls.createdAt || null,
+        enrollStudentCount: enrollmentCountMap.get(toId(cls._id)) || 0,
         lessonCount: lessonCountMap.get(toId(cls._id)) || 0,
+        recordingCount: recordingCountMap.get(toId(cls._id)) || 0,
         liveClassCount: liveCountMap.get(toId(cls._id)) || 0,
+        createdAt: cls.createdAt || null,
       };
     });
 
@@ -240,11 +297,17 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
       );
     }
 
-    reports.sort((a, b) =>
-      String(a.className || "").localeCompare(String(b.className || ""))
-    );
+    reports.sort((a, b) => {
+      const classCompare = String(a.className || "").localeCompare(
+        String(b.className || "")
+      );
+      if (classCompare !== 0) return classCompare;
+
+      return String(a.batchNumber || "").localeCompare(String(b.batchNumber || ""));
+    });
 
     const total = reports.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
     const paginatedReports = reports.slice(skip, skip + limit);
 
     return res.status(200).json({
@@ -252,6 +315,14 @@ export const getTeachersAssignedClassReport = async (req, res, next) => {
       total,
       page,
       limit,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
       filters: {
         grades: gradeOptions,
         subjects: subjectOptions,
