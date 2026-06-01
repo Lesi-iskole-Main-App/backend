@@ -10,10 +10,8 @@ const normalizeKey = (value = "") =>
 
 const sanitizeUser = (userDoc) => {
   if (!userDoc) return null;
-
   const user = userDoc.toObject ? userDoc.toObject() : { ...userDoc };
   delete user.password;
-
   return user;
 };
 
@@ -46,6 +44,13 @@ const parseBirthday = (value) => {
   return d;
 };
 
+const levelFromGradeNumber = (n) => {
+  if (n >= 1 && n <= 5) return "primary";
+  if (n >= 6 && n <= 11) return "secondary";
+  if (n >= 12 && n <= 13) return "al";
+  return null;
+};
+
 export const getMyProfile = async (req, res, next) => {
   try {
     const userId = req.user?.id;
@@ -64,9 +69,42 @@ export const getMyProfile = async (req, res, next) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    return res.status(200).json({
-      user,
-    });
+    return res.status(200).json({ user });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateSelf = async (req, res, next) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+    const ALLOWED = ["name", "district", "town", "address", "birthday", "selectedLanguage"];
+    const updates = {};
+
+    for (const key of ALLOWED) {
+      if (typeof req.body?.[key] !== "undefined") {
+        updates[key] = req.body[key];
+      }
+    }
+
+    if (typeof updates.name !== "undefined")     updates.name     = normalizeText(updates.name);
+    if (typeof updates.district !== "undefined") updates.district = normalizeText(updates.district);
+    if (typeof updates.town !== "undefined")     updates.town     = normalizeText(updates.town);
+    if (typeof updates.address !== "undefined")  updates.address  = normalizeText(updates.address);
+    if (typeof updates.birthday !== "undefined") updates.birthday = parseBirthday(updates.birthday);
+
+    const updated = await User.findByIdAndUpdate(userId, updates, {
+      new: true,
+      runValidators: true,
+      context: "query",
+      select: "-password",
+    }).lean();
+
+    if (!updated) return res.status(404).json({ message: "User not found" });
+
+    return res.status(200).json({ message: "Profile updated successfully", user: updated });
   } catch (err) {
     next(err);
   }
@@ -103,7 +141,6 @@ export const createUser = async (req, res, next) => {
     }
 
     const hashedPassword = await bcrypt.hash(String(password), 10);
-
     const birthdayDate = parseBirthday(birthday);
 
     const created = await User.create({
@@ -176,29 +213,23 @@ export const updateUser = async (req, res, next) => {
     if (typeof updates.phonenumber !== "undefined") {
       updates.phonenumber = normalizePhone(updates.phonenumber);
     }
-
     if (typeof updates.name !== "undefined") {
       updates.name = normalizeText(updates.name);
     }
-
     if (typeof updates.district !== "undefined") {
       updates.district = normalizeText(updates.district);
     }
-
     if (typeof updates.town !== "undefined") {
       updates.town = normalizeText(updates.town);
     }
-
     if (typeof updates.address !== "undefined") {
       updates.address = normalizeText(updates.address);
     }
-
     if (typeof updates.password !== "undefined" && updates.password) {
       updates.password = await bcrypt.hash(String(updates.password), 10);
     } else {
       delete updates.password;
     }
-
     if (typeof updates.birthday !== "undefined") {
       updates.birthday = parseBirthday(updates.birthday);
     }
@@ -318,10 +349,19 @@ export const rejectTeacher = async (req, res, next) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// STUDENT GRADE SELECTION  (fully bidirectional — no lock)
+//
+// Supports ALL transitions:
+//   Grade 1  → Grade 12 A/L Physical Science
+//   Grade 12 A/L → Grade 3
+//   Grade 12 Commerce → Grade 12 Arts
+//   Grade 5  → Grade 9
+//   any grade → clear (gradeNumber: null)
+// ─────────────────────────────────────────────────────────────────────────────
 export const saveStudentGradeSelection = async (req, res, next) => {
   try {
     const userId = req.user?.id;
-    const { level, grade, gradeNumber, stream } = req.body || {};
 
     if (!userId) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -336,46 +376,75 @@ export const saveStudentGradeSelection = async (req, res, next) => {
     if (user.role !== "student") {
       return res
         .status(403)
-        .json({ message: "Only students can save grade selection" });
+        .json({ message: "Only students can update grade selection" });
     }
 
+    const { gradeNumber, level, stream } = req.body || {};
+
+    // ── Clear selection ────────────────────────────────────────────────────
+    const rawGradeNumber = gradeNumber ?? null;
+
+    if (
+      rawGradeNumber === null ||
+      rawGradeNumber === "" ||
+      rawGradeNumber === undefined
+    ) {
+      user.selectedLevel = null;
+      user.selectedGradeNumber = null;
+      user.selectedStream = null;
+      user.gradeSelectedAt = new Date();
+      await user.save();
+
+      return res.status(200).json({
+        message: "Grade selection cleared",
+        user: sanitizeUser(user),
+      });
+    }
+
+    // ── Resolve intended grade number ──────────────────────────────────────
     const cleanLevel = normalizeText(level).toLowerCase();
-    const cleanGrade = normalizeText(grade);
-    const cleanStream = normalizeKey(stream);
+    const isALByLevel = cleanLevel === "al";
 
-    let finalGradeNumber = Number(gradeNumber);
-
-    if (cleanLevel === "al") {
-      finalGradeNumber = 12;
-    } else if (!Number.isFinite(finalGradeNumber)) {
-      const gradeNumberMatch = cleanGrade.match(/(\d{1,2})/);
-      finalGradeNumber = gradeNumberMatch
-        ? Number(gradeNumberMatch[1])
-        : Number(cleanGrade);
+    let intendedGrade;
+    if (String(rawGradeNumber).toLowerCase() === "al") {
+      intendedGrade = 12;
+    } else {
+      intendedGrade = Number(rawGradeNumber);
     }
 
     if (
-      !Number.isInteger(finalGradeNumber) ||
-      finalGradeNumber < 1 ||
-      finalGradeNumber > 13
+      !Number.isInteger(intendedGrade) ||
+      intendedGrade < 1 ||
+      intendedGrade > 13
     ) {
-      return res.status(400).json({ message: "Valid grade is required" });
+      return res
+        .status(400)
+        .json({ message: "gradeNumber must be between 1 and 13 (or 'al')" });
     }
 
-    const query =
-      cleanLevel === "al"
-        ? { flowType: "al", grade: 12, isActive: true }
-        : { flowType: "normal", grade: finalGradeNumber, isActive: true };
+    const isAL = isALByLevel || intendedGrade === 12 || intendedGrade === 13;
 
-    const gradeDoc = await Grade.findOne(query).lean();
+    // ── A/L path ───────────────────────────────────────────────────────────
+    if (isAL) {
+      const cleanStream = normalizeKey(stream);
 
-    if (!gradeDoc) {
-      return res.status(400).json({ message: "Selected grade not found" });
-    }
-
-    if (cleanLevel === "al" || gradeDoc.flowType === "al") {
       if (!cleanStream) {
-        return res.status(400).json({ message: "Stream is required for A/L" });
+        return res.status(400).json({
+          message:
+            "stream is required for A/L. Valid values: physical_science, biological_science, commerce, arts, technology, common",
+        });
+      }
+
+      const gradeDoc = await Grade.findOne({
+        flowType: "al",
+        grade: 12,
+        isActive: true,
+      }).lean();
+
+      if (!gradeDoc) {
+        return res
+          .status(400)
+          .json({ message: "A/L grade is not configured in the system" });
       }
 
       const streamExists = Array.isArray(gradeDoc.streams)
@@ -385,25 +454,55 @@ export const saveStudentGradeSelection = async (req, res, next) => {
         : false;
 
       if (!streamExists) {
-        return res
-          .status(400)
-          .json({ message: "Invalid stream for selected grade" });
+        const validStreams = (gradeDoc.streams || [])
+          .map((st) => st?.stream)
+          .filter(Boolean);
+
+        return res.status(400).json({
+          message: `Invalid stream "${cleanStream}". Valid streams: ${validStreams.join(", ")}`,
+          validStreams,
+        });
       }
 
       user.selectedLevel = "al";
       user.selectedGradeNumber = 12;
       user.selectedStream = cleanStream;
-    } else {
-      user.selectedLevel = finalGradeNumber <= 5 ? "primary" : "secondary";
-      user.selectedGradeNumber = finalGradeNumber;
-      user.selectedStream = null;
+      user.gradeSelectedAt = new Date();
+      await user.save();
+
+      return res.status(200).json({
+        message: `Grade selection updated to A/L - ${cleanStream}`,
+        user: sanitizeUser(user),
+      });
     }
 
+    // ── Normal path (grades 1–11) ──────────────────────────────────────────
+    if (intendedGrade < 1 || intendedGrade > 11) {
+      return res
+        .status(400)
+        .json({ message: "Normal grades must be between 1 and 11" });
+    }
+
+    const gradeDoc = await Grade.findOne({
+      flowType: "normal",
+      grade: intendedGrade,
+      isActive: true,
+    }).lean();
+
+    if (!gradeDoc) {
+      return res.status(400).json({
+        message: `Grade ${intendedGrade} is not found or not active in the system`,
+      });
+    }
+
+    user.selectedLevel = levelFromGradeNumber(intendedGrade);
+    user.selectedGradeNumber = intendedGrade;
+    user.selectedStream = null;
     user.gradeSelectedAt = new Date();
     await user.save();
 
     return res.status(200).json({
-      message: "Grade selection saved successfully",
+      message: `Grade selection updated to Grade ${intendedGrade}`,
       user: sanitizeUser(user),
     });
   } catch (err) {

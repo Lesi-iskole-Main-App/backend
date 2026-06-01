@@ -9,6 +9,7 @@ import {
   rejectTeacher,
   saveStudentGradeSelection,
   getMyProfile,
+  updateSelf,
 } from "../application/user.js";
 import { updateMyProfile } from "../application/userProfile.js";
 
@@ -22,9 +23,22 @@ const router = express.Router();
 ========================= */
 router.get("/me", authenticate, getMyProfile);
 router.patch("/me/profile", authenticate, updateMyProfile);
+router.put("/me", authenticate, updateSelf);
 
 /* =========================
-   STUDENT: SAVE GRADE ONCE
+   STUDENT: GRADE SELECTION
+   Fully bidirectional - no lock.
+   Grade 1 → A/L, A/L → Grade 3, etc.
+
+   Body (normal grade):
+     { "gradeNumber": 6 }
+
+   Body (A/L):
+     { "gradeNumber": 12, "stream": "physical_science" }
+     { "level": "al",    "stream": "commerce" }
+
+   Body (clear):
+     { "gradeNumber": null }
 ========================= */
 router.patch(
   "/student/grade-selection",
