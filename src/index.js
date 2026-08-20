@@ -118,7 +118,7 @@ const corsMiddleware = cors({
       return cb(null, true);
     }
 
-    console.log("❌ CORS blocked origin:", origin);
+    console.log("❌ CORS blocked origin:", origin, "Allowed:", allowedOrigins);
     return cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
@@ -177,6 +177,28 @@ app.use((req, res, next) => {
   next();
 });
 
+/*
+ * DB CONNECTION GUARD
+ *
+ * On serverless (Vercel), a cold-started function could previously start
+ * handling requests before Mongoose finished connecting, causing queries to
+ * hang and eventually throw a generic 500 (e.g. on /api/auth/signin).
+ * This waits for a ready connection (cached after the first successful
+ * connect) before any route runs, and fails loudly with a 503 if the DB is
+ * genuinely unreachable, instead of a mysterious 500.
+ */
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error("❌ Request blocked, database unavailable:", error);
+    return res.status(503).json({
+      message: "Database temporarily unavailable. Please try again shortly.",
+    });
+  }
+});
+
 app.use("/api/auth", authRouter);
 app.use("/api/user", userRouter);
 app.use("/api/grade", gradeRouter);
@@ -209,15 +231,32 @@ app.use("/api/admin-result-report", adminResultReportRouter);
 app.use("/api/review", reviewRouter);
 
 app.get("/", (req, res) => res.send("OK"));
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+app.get("/api/health", async (req, res) => {
+  try {
+    await connectDB();
+    return res.json({ ok: true, db: "connected" });
+  } catch (error) {
+    return res.status(503).json({ ok: false, db: "disconnected" });
+  }
+});
 
 app.use(GlobalErrorHandler);
 
-connectDB();
-
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
-  console.log("✅ Allowed origins:", allowedOrigins);
-});
 
+// Connect once up front (fast path for traditional/long-running hosting),
+// then start listening. On serverless this initial call also warms the
+// cache so the per-request guard middleware above resolves instantly.
+connectDB()
+  .then(() => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`✅ Server running on http://0.0.0.0:${PORT}`);
+      console.log("✅ Allowed origins:", allowedOrigins);
+    });
+  })
+  .catch((error) => {
+    console.error("❌ Failed to start server, database connection failed:", error);
+    process.exit(1);
+  });
+
+export default app;
